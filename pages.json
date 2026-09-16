@@ -1,0 +1,95 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "球局广场",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/create/create",
+      "style": {
+        "navigationBarTitleText": "发布球局"
+      }
+    },
+    {
+      "path": "pages/ranking/ranking",
+      "style": {
+        "navigationBarTitleText": "ELO 积分榜",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/rotation/rotation",
+      "style": {
+        "navigationBarTitleText": "轮排"
+      }
+    },
+    {
+      "path": "pages/elo/elo",
+      "style": {
+        "navigationBarTitleText": "ELO 试算实验室"
+      }
+    },
+    {
+      "path": "pages/mine/mine",
+      "style": {
+        "navigationBarTitleText": "我的"
+      }
+    },
+    {
+      "path": "pages/detail/detail",
+      "style": {
+        "navigationBarTitleText": "球局详情",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/auth/auth",
+      "style": {
+        "navigationBarTitleText": "登录"
+      }
+    },
+    {
+      "path": "pages/chat/chat",
+      "style": {
+        "navigationBarTitleText": "临时聊天室"
+      }
+    }
+  ],
+  "tabBar": {
+    "color": "#5A726D",
+    "selectedColor": "#14665B",
+    "backgroundColor": "#FFFFFF",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "球局"
+      },
+      {
+        "pagePath": "pages/create/create",
+        "text": "发布"
+      },
+      {
+        "pagePath": "pages/ranking/ranking",
+        "text": "积分榜"
+      },
+      {
+        "pagePath": "pages/mine/mine",
+        "text": "我的"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "数羽 SHUYU",
+    "navigationBarBackgroundColor": "#14665B",
+    "backgroundColor": "#FAF7F0",
+    "backgroundTextStyle": "dark",
+    "app-plus": {
+      "background": "#FAF7F0"
+    }
+  }
+}
