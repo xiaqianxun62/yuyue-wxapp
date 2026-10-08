@@ -4,7 +4,7 @@
     <image
       :src="displaySrc"
       :mode="mode"
-      :class="{ fade-in: fading }"
+      :class="{ 'fade-in': fading }"
       class="smart-image"
       @error="onError"
       @load="onLoad"
@@ -36,12 +36,12 @@
 import { computed, ref, watch } from 'vue'
 import { resolveUrl, thumbUrl } from '../../common/util'
 
-const props = withDefaults(defineProps({
+const props = defineProps({
   /** 原图 URL（后端返回的相对路径 /uploads/xxx，或完整 http(s) URL） */
   src: { type: String, default: '' },
   /** <image mode>，默认 aspectFill（头像/封面常用） */
   mode: { type: String, default: 'aspectFill' },
-}), {})
+})
 
 const loaded = ref(false)
 const fading = ref(false)
