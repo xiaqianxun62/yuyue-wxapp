@@ -1,64 +1,25 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
-import { updateProfile } from '../../common/api/auth'
-import { DEPARTMENTS, genderText, randomUid, toastError } from '../../common/util'
+import { genderText, resolveUrl } from '../../common/util'
 import { useAuth } from '../../common/store/auth'
-import { navigateTo, switchTab } from '../../common/nav'
+import { navigateTo } from '../../common/nav'
+import { ENVIRONMENTS, getEnvId, setEnvId, getCustomUrl, setCustomUrl, getCurrentEnv } from '../../common/config'
 
-const { user, isLoggedIn, logout, restore, applyProfile } = useAuth()
+const { user, isLoggedIn, logout, restore, refreshMe } = useAuth()
 
-/** 资料编辑：微信首次登录的用户没有姓名学号，在这里补齐 */
-const profileForm = ref({ name: '', gender: 0, college: '计算机学院' })
-const saving = ref(false)
-
-watch(
-  user,
-  (u) => {
-    if (u) {
-      profileForm.value = {
-        name: u.name || '',
-        gender: u.gender || 0,
-        college: u.college || '计算机学院',
-      }
-    }
-  },
-  { immediate: true },
-)
+const statusBarHeight = uni.getSystemInfoSync().statusBarHeight || 20
+const navbarHeight = statusBarHeight + 44
+const currentEnv = ref(getCurrentEnv())
+const envPickerVisible = ref(false)
+const customUrlInput = ref(getCustomUrl())
 
 onShow(() => {
   restore()
+  // 每次回到本页都同步一次库里的最新资料（头像可能在别的端/本页被更新）
+  refreshMe()
+  currentEnv.value = getCurrentEnv()
 })
-
-async function saveProfile() {
-  if (!profileForm.value.name.trim()) {
-    uni.showToast({ title: '请填写姓名', icon: 'none' })
-    return
-  }
-  saving.value = true
-  try {
-    const profile = {
-      name: profileForm.value.name.trim(),
-      gender: Number(profileForm.value.gender),
-      college: profileForm.value.college,
-    }
-    const updated = await updateProfile(profile)
-    applyProfile(updated)
-    uni.showToast({ title: '已保存', icon: 'success' })
-  } catch (e) {
-    toastError(e, '保存失败')
-  } finally {
-    saving.value = false
-  }
-}
-
-function onCollegeChange(evt) {
-  profileForm.value.college = DEPARTMENTS[Number(evt.detail.value)]
-}
-
-function pickGender(value) {
-  profileForm.value.gender = value
-}
 
 async function handleLogout() {
   uni.showModal({
@@ -72,48 +33,72 @@ async function handleLogout() {
   })
 }
 
-function goLogin() {
-  navigateTo('/pages/auth/auth')
-}
+function goLogin() { navigateTo('/pages/auth/auth') }
+function goProfile() { navigateTo('/pages/profile/profile') }
+function goElo() { navigateTo('/pages/elo/elo') }
+function goRotation() { navigateTo('/pages/rotation/rotation') }
+function goHistory() { navigateTo('/pages/history/history') }
+function goFootwork() { navigateTo('/pages/footwork/footwork') }
 
-function goChat() {
-  navigateTo(`/pages/chat/chat?nick=球友#${randomUid()}`)
+function openEnvPicker() {
+  customUrlInput.value = getCustomUrl()
+  envPickerVisible.value = true
 }
-
-function goElo() {
-  switchTab('/pages/elo/elo')
+function closeEnvPicker() { envPickerVisible.value = false }
+function selectEnv(envId) {
+  setEnvId(envId)
+  currentEnv.value = getCurrentEnv()
+  envPickerVisible.value = false
+  uni.showToast({ title: `已切换到${currentEnv.value.label}`, icon: 'none' })
 }
-
-function goRotation() {
-  navigateTo('/pages/rotation/rotation')
+function saveCustomUrl() {
+  const url = customUrlInput.value.trim()
+  if (!url) { uni.showToast({ title: '请输入地址', icon: 'none' }); return }
+  setCustomUrl(url); setEnvId('custom'); currentEnv.value = getCurrentEnv()
+  envPickerVisible.value = false
+  uni.showToast({ title: '已切换到自定义环境', icon: 'none' })
 }
 </script>
 
 <template>
   <view class="page">
+    <view class="navbar" :style="{ paddingTop: statusBarHeight + 'px' }">
+      <view class="nav-title">我的</view>
+    </view>
+
     <view v-if="isLoggedIn && user" class="profile">
-      <view class="avatar">{{ user.name.charAt(0) }}</view>
+      <view v-if="user.avatar" class="avatar">
+        <image class="avatar-img" :src="resolveUrl(user.avatar)" mode="aspectFill" />
+      </view>
+      <view v-else class="avatar">{{ user.name.charAt(0) }}</view>
       <view class="name">{{ user.name }}</view>
-      <view class="meta">{{ user.college || '未填写学院' }} · {{ genderText(user.gender) }}</view>
+      <view class="meta">{{ genderText(user.gender) }}</view>
+      <view v-if="user.account" class="meta">账号 {{ user.account }}</view>
+
       <view class="stats">
         <view class="stat">
           <text class="stat-value">{{ user.rating }}</text>
           <text class="stat-label">ELO 积分</text>
         </view>
-        <view class="stat">
+        <view class="stat" @click="goHistory">
           <text class="stat-value">{{ user.gamesPlayed }}</text>
-          <text class="stat-label">历史场次</text>
+          <text class="stat-label">历史场次 ›</text>
         </view>
       </view>
     </view>
 
     <view v-else class="guest">
       <view class="guest-title">还没有登录</view>
-      <view class="guest-desc">学号注册后即可发布球局、匿名报名、查看 ELO 积分榜</view>
+      <view class="guest-desc">注册后即可发布球局、报名、查看 ELO 积分榜</view>
       <button class="primary-btn" type="button" @click="goLogin">登录 / 注册</button>
     </view>
 
     <view class="menu">
+      <view v-if="isLoggedIn" class="item" @click="goProfile">
+        <uni-icons type="person" size="16" color="#14665B" />
+        <text class="item-text">编辑个人信息</text>
+        <text class="arrow">›</text>
+      </view>
       <view class="item" @click="goRotation">
         <uni-icons type="refresh" size="16" color="#14665B" />
         <text class="item-text">轮排安排</text>
@@ -124,46 +109,56 @@ function goRotation() {
         <text class="item-text">ELO 试算实验室</text>
         <text class="arrow">›</text>
       </view>
-      <view class="item" @click="goChat">
-        <uni-icons type="chatboxes" size="16" color="#14665B" />
-        <text class="item-text">临时聊天室</text>
+      <view class="item" @click="goFootwork">
+        <uni-icons type="paperplane" size="16" color="#14665B" />
+        <text class="item-text">步伐训练</text>
+        <text class="arrow">›</text>
+      </view>
+
+      <view class="item" @click="openEnvPicker">
+        <uni-icons type="gear" size="16" color="#14665B" />
+        <text class="item-text">环境切换</text>
+        <text class="env-tag">{{ currentEnv.label }}</text>
         <text class="arrow">›</text>
       </view>
       <view v-if="isLoggedIn" class="item danger" @click="handleLogout">
-        <uni-icons type="close" size="16" color="#9AA8A4" />
+        <uni-icons type="close" size="16" color="#aa0000" />
         <text class="item-text">退出登录</text>
         <text class="arrow">›</text>
       </view>
     </view>
 
-    <view v-if="isLoggedIn" class="panel">
-      <view class="panel-title">完善资料</view>
-      <view class="field">
-        <text class="label">姓名</text>
-        <uni-easyinput v-model="profileForm.name" placeholder="填写真实姓名，便于球友辨认" />
-      </view>
-      <view class="field">
-        <text class="label">性别</text>
-        <view class="gender">
-          <view :class="['gender-item', { active: profileForm.gender === 1 }]" @click="pickGender(1)">男</view>
-          <view :class="['gender-item', { active: profileForm.gender === 2 }]" @click="pickGender(2)">女</view>
+    <view class="foot">by 2026@千巽</view>
+
+    <!-- 环境切换弹层 -->
+    <view v-if="envPickerVisible" class="mask" @click="closeEnvPicker">
+      <view class="picker" @click.stop>
+        <view class="picker-head">
+          <text class="picker-title">切换环境</text>
+          <text class="picker-close" @click="closeEnvPicker">✕</text>
+        </view>
+        <view
+          v-for="env in ENVIRONMENTS"
+          :key="env.id"
+          :class="['env-option', { active: getEnvId() === env.id }]"
+          @click="selectEnv(env.id)"
+        >
+          <text class="env-label">{{ env.label }}</text>
+          <text class="env-url">{{ env.url }}</text>
+        </view>
+        <view
+          :class="['env-option', { active: getEnvId() === 'custom' }]"
+          @click="selectEnv('custom')"
+        >
+          <text class="env-label">自定义</text>
+          <text class="env-url">{{ getCustomUrl() || '未设置' }}</text>
+        </view>
+        <view class="custom-row">
+          <input class="custom-input" v-model="customUrlInput" placeholder="http://IP:端口/api" confirm-type="done" @confirm="saveCustomUrl" />
+          <button class="custom-btn" @click="saveCustomUrl">保存</button>
         </view>
       </view>
-      <view class="field">
-        <text class="label">学院</text>
-        <picker
-          mode="selector"
-          :range="DEPARTMENTS"
-          :value="DEPARTMENTS.indexOf(profileForm.college)"
-          @change="onCollegeChange"
-        >
-          <view class="picker">{{ profileForm.college }}</view>
-        </picker>
-      </view>
-      <button class="save-btn" type="button" :loading="saving" @click="saveProfile">保存资料</button>
     </view>
-
-    <view class="foot">演示项目 · 数据由后端 yuyue-backend 提供</view>
   </view>
 </template>
 
@@ -173,11 +168,23 @@ function goRotation() {
   background: #faf7f0;
   padding-bottom: 30px;
 }
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0c3125;
+  color: #faf7f0;
+}
+.nav-title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 44px;
+}
 .profile,
 .guest {
   padding: 24px 16px 26px;
   text-align: center;
-  background: #14665b;
+  background: #0c3125;
   color: #faf7f0;
 }
 .avatar {
@@ -192,6 +199,12 @@ function goRotation() {
   color: #1a2e2a;
   font-size: 26px;
   font-weight: 800;
+  overflow: hidden;
+}
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
 }
 .name {
   font-size: 18px;
@@ -258,7 +271,7 @@ function goRotation() {
   border-bottom: 1px solid #f0efea;
 }
 .item.danger .item-text {
-  color: #9aa8a4;
+  color: #aa0000;
 }
 .item-text {
   flex: 1;
@@ -269,74 +282,97 @@ function goRotation() {
   font-size: 16px;
   color: #5a726d;
 }
-.panel {
-  margin: 0 16px;
-  padding: 14px;
-  border: 1px solid #e3e8e6;
-  border-radius: 12px;
-  background: #ffffff;
-}
-.panel-title {
-  margin-bottom: 10px;
-  font-size: 14px;
-  font-weight: 800;
-  color: #1a2e2a;
-}
-.field {
-  margin-bottom: 12px;
-}
-.label {
-  display: block;
-  margin-bottom: 6px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #1a2e2a;
-}
-.gender {
-  display: flex;
-  gap: 10px;
-}
-.gender-item {
-  flex: 1;
-  height: 38px;
-  line-height: 38px;
-  text-align: center;
-  border: 1px solid #e3e8e6;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #5a726d;
-  font-size: 14px;
-}
-.gender-item.active {
-  border-color: #14665b;
-  background: #e0f1ec;
-  color: #14665b;
-  font-weight: 700;
-}
-.picker {
-  height: 38px;
-  line-height: 38px;
-  padding: 0 10px;
-  border: 1px solid #e3e8e6;
-  border-radius: 8px;
-  background: #ffffff;
-  font-size: 14px;
-  color: #1a2e2a;
-}
-.save-btn {
-  height: 42px;
-  line-height: 42px;
-  border: 1px solid #14665b;
-  border-radius: 10px;
-  background: #ffffff;
-  color: #14665b;
-  font-size: 15px;
-  font-weight: 700;
-}
 .foot {
   margin-top: 20px;
   text-align: center;
   font-size: 11px;
   color: #5a726d;
+}
+.env-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #e0f1ec;
+  color: #14665b;
+  font-size: 10px;
+  font-weight: 700;
+}
+.mask {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+  background: rgba(26, 46, 42, 0.45);
+  display: flex;
+  align-items: flex-end;
+}
+.picker {
+  width: 100%;
+  border-radius: 16px 16px 0 0;
+  background: #ffffff;
+  padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+}
+.picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.picker-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: #1a2e2a;
+}
+.picker-close {
+  padding: 4px;
+  font-size: 14px;
+  color: #5a726d;
+}
+.env-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border: 1px solid #e3e8e6;
+  border-radius: 10px;
+  background: #faf7f0;
+}
+.env-option.active {
+  border-color: #14665b;
+  background: #e0f1ec;
+}
+.env-label {
+  font-size: 14px;
+  font-weight: 700;
+  color: #1a2e2a;
+}
+.env-url {
+  font-size: 11px;
+  color: #5a726d;
+  word-break: break-all;
+}
+.custom-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.custom-input {
+  flex: 1;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid #e3e8e6;
+  border-radius: 10px;
+  background: #faf7f0;
+  font-size: 13px;
+}
+.custom-btn {
+  height: 40px;
+  line-height: 40px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 10px;
+  background: #14665b;
+  color: #faf7f0;
+  font-size: 13px;
+  font-weight: 700;
 }
 </style>

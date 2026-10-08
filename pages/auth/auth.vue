@@ -1,34 +1,72 @@
 <script setup>
+import { onMounted } from 'vue'
 import { ref } from 'vue'
-import { DEPARTMENTS, toastError } from '../../common/util'
+import { toastError } from '../../common/util'
+import { fetchCaptcha, checkNameAvailable } from '../../common/api/auth'
 import { useAuth } from '../../common/store/auth'
 // 本页有同名的 tab 切换函数 switchTab，页面跳转的重命名为 switchTabPage
-import { navigateBack, switchTab as switchTabPage } from '../../common/nav'
+import { backOrHome, switchTab as switchTabPage } from '../../common/nav'
+import NavBack from '../../components/nav-back/nav-back.vue'
 
 const { submitting, login, register, loginWithWechat } = useAuth()
 
 const tab = ref('login')
-const DEPARTMENT_INDEX = DEPARTMENTS.indexOf('计算机学院')
 
 const form = ref({
-  studentNo: '',
+  account: '',
   password: '',
   name: '',
   gender: 1,
-  college: '计算机学院',
 })
 const agree = ref(true)
 
+// 图形验证码
+const captchaLoading = ref(false)
+const captchaUuid = ref('')
+const captchaImage = ref('')
+const captchaInput = ref('')
+
+async function loadCaptcha() {
+  captchaLoading.value = true
+  try {
+    const res = await fetchCaptcha()
+    captchaUuid.value = res.uuid
+    captchaImage.value = res.image
+    captchaInput.value = ''
+  } catch (e) {
+    toastError(e, '验证码加载失败')
+  } finally {
+    captchaLoading.value = false
+  }
+}
+
+// 昵称查重状态：null=还没查 / true=可用 / false=已占用
+const nameAvailable = ref(null)
+let nameCheckTimer = null
+
+/** 注册 tab 昵称查重：输入停 600ms 后自动查 */
+function onNameInput() {
+  nameAvailable.value = null
+  if (nameCheckTimer) clearTimeout(nameCheckTimer)
+  const v = (form.value.name || '').trim()
+  if (!v) return
+  nameCheckTimer = setTimeout(async () => {
+    try {
+      const res = await checkNameAvailable(v)
+      nameAvailable.value = res.available
+    } catch {
+      nameAvailable.value = null
+    }
+  }, 600)
+}
+
 function switchTab(next) {
   tab.value = next
+  loadCaptcha() // 登录 / 注册都需要
 }
 
 function pickGender(value) {
   form.value.gender = value
-}
-
-function onCollegeChange(evt) {
-  form.value.college = DEPARTMENTS[Number(evt.detail.value)]
 }
 
 async function wechatLogin() {
@@ -46,7 +84,7 @@ async function wechatLogin() {
       if (res.newUser) {
         switchTabPage('/pages/mine/mine')
       } else {
-        navigateBack()
+        backOrHome('/pages/mine/mine')
       }
     }, 600)
   } catch (e) {
@@ -59,8 +97,8 @@ async function submit() {
     uni.showToast({ title: '请先勾选同意用户协议', icon: 'none' })
     return
   }
-  if (!form.value.studentNo || !form.value.password) {
-    uni.showToast({ title: '请填写学号与密码', icon: 'none' })
+  if (!form.value.account || !form.value.password) {
+    uni.showToast({ title: '请填写账号与密码', icon: 'none' })
     return
   }
   if (tab.value === 'register' && !form.value.name) {
@@ -68,32 +106,49 @@ async function submit() {
     return
   }
   try {
+    if (!captchaInput.value.trim()) {
+      uni.showToast({ title: '请填写图形验证码', icon: 'none' })
+      return
+    }
     if (tab.value === 'login') {
-      await login({ studentNo: form.value.studentNo, password: form.value.password })
+      await login({
+        account: form.value.account,
+        password: form.value.password,
+        captchaUuid: captchaUuid.value,
+        captchaCode: captchaInput.value.trim(),
+      })
     } else {
       await register({
-        studentNo: form.value.studentNo,
+        account: form.value.account,
         name: form.value.name,
         gender: Number(form.value.gender),
-        college: form.value.college,
         password: form.value.password,
+        captchaUuid: captchaUuid.value,
+        captchaCode: captchaInput.value.trim(),
       })
     }
     uni.showToast({ title: tab.value === 'login' ? '登录成功' : '注册成功', icon: 'success' })
     setTimeout(() => {
-      navigateBack()
+      backOrHome('/pages/mine/mine')
     }, 600)
   } catch (e) {
     toastError(e, tab.value === 'login' ? '登录失败' : '注册失败')
+    await loadCaptcha() // 失败强制换一张
   }
 }
+
+onMounted(() => {
+  loadCaptcha()
+})
 </script>
 
 <template>
   <view class="page">
+    <NavBack />
+
     <view class="head">
       <view class="head-title">数羽 SHUYU</view>
-      <view class="head-sub">学号认证后，即可发布与报名球局</view>
+      <view class="head-sub">注册账号后，即可发布与报名球局</view>
     </view>
 
     <view class="tabs">
@@ -103,8 +158,8 @@ async function submit() {
 
     <view class="form">
       <view class="field">
-        <text class="label">学号</text>
-        <uni-easyinput v-model="form.studentNo" placeholder="请输入学号" />
+        <text class="label">账号</text>
+        <uni-easyinput v-model="form.account" placeholder="请输入账号" />
       </view>
       <view class="field">
         <text class="label">密码</text>
@@ -113,8 +168,14 @@ async function submit() {
 
       <template v-if="tab === 'register'">
         <view class="field">
-          <text class="label">姓名</text>
-          <uni-easyinput v-model="form.name" placeholder="请输入真实姓名" />
+          <text class="label">名称</text>
+          <uni-easyinput v-model="form.name" placeholder="请输入名称" :maxlength="20" @input="onNameInput" />
+          <view v-if="nameAvailable === false" class="field-hint bad">
+            ⚠️ 这个昵称已经被占用啦，请换一个
+          </view>
+          <view v-else-if="nameAvailable === true" class="field-hint good">
+            ✓ 昵称可用
+          </view>
         </view>
         <view class="field">
           <text class="label">性别</text>
@@ -123,13 +184,27 @@ async function submit() {
             <view :class="['gender-item', { active: form.gender === 2 }]" @click="pickGender(2)">女</view>
           </view>
         </view>
-        <view class="field">
-          <text class="label">学院</text>
-          <picker mode="selector" :range="DEPARTMENTS" :value="DEPARTMENT_INDEX" @change="onCollegeChange">
-            <view class="picker">{{ form.college }}</view>
-          </picker>
-        </view>
       </template>
+
+      <view class="field">
+        <text class="label">图形验证码</text>
+        <view class="captcha-row">
+          <uni-easyinput v-model="captchaInput" placeholder="不区分大小写" :maxlength="6" />
+          <view
+            class="captcha-img"
+            :class="{ loading: captchaLoading, empty: !captchaImage }"
+            @click="loadCaptcha"
+          >
+            <image
+              v-if="captchaImage"
+              :src="captchaImage"
+              mode="aspectFit"
+              class="captcha-pic"
+            />
+            <view v-else class="captcha-spinner" />
+          </view>
+        </view>
+      </view>
 
       <view class="agree">
         <switch :checked="agree" color="#14665B" @change="agree = $event.detail.value" />
@@ -140,6 +215,7 @@ async function submit() {
         {{ tab === 'login' ? '登录' : '注册并开始' }}
       </button>
 
+      <!-- #ifndef H5 -->
       <view class="divider">
         <view class="line"></view>
         <text class="divider-text">或</text>
@@ -148,7 +224,8 @@ async function submit() {
       <button class="wx-btn" type="button" :loading="submitting" @click="wechatLogin">
         微信一键登录
       </button>
-      <view class="wx-tip">使用微信账号快速进入，无需学号密码</view>
+      <view class="wx-tip">使用微信账号快速进入</view>
+      <!-- #endif -->
     </view>
   </view>
 </template>
@@ -206,6 +283,52 @@ async function submit() {
   font-weight: 700;
   color: #1a2e2a;
 }
+
+/* 图形验证码 */
+.captcha-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.captcha-row .uni-easyinput {
+  flex: 1;
+}
+.captcha-row .uni-easyinput input {
+  letter-spacing: 2px;
+}
+.captcha-img {
+  flex: 0 0 120px;
+  height: 38px;
+  background: #ffffff;
+  border: 1px solid #e3e8e6;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.captcha-img.loading {
+  opacity: 0.7;
+}
+.captcha-img.empty {
+  background: #f5f3ee;
+}
+.captcha-pic {
+  width: 100%;
+  height: 100%;
+}
+.captcha-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #e3e8e6;
+  border-top-color: #14665b;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .gender {
   display: flex;
   gap: 10px;
@@ -226,16 +349,6 @@ async function submit() {
   background: #e0f1ec;
   color: #14665b;
   font-weight: 700;
-}
-.picker {
-  height: 38px;
-  line-height: 38px;
-  padding: 0 10px;
-  border: 1px solid #e3e8e6;
-  border-radius: 8px;
-  background: #ffffff;
-  font-size: 14px;
-  color: #1a2e2a;
 }
 .agree {
   display: flex;
@@ -287,5 +400,16 @@ async function submit() {
   text-align: center;
   font-size: 11px;
   color: #5a726d;
+}
+.field-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.field-hint.bad {
+  color: #c0392b;
+}
+.field-hint.good {
+  color: #14665b;
 }
 </style>

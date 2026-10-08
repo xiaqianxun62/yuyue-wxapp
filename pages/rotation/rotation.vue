@@ -1,9 +1,12 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
-import { planRotation, planRotationForGame } from '../../common/api/rotation'
-import { listGames } from '../../common/api/game'
-import { genderText, toastError } from '../../common/util'
+import { planRotation, planRotationForGame, getRotationForGame } from '../../common/api/rotation'
+import { listGames, getGame, scoreMatch } from '../../common/api/game'
+import { AVATAR_COLORS, genderText, resolveUrl, toastError } from '../../common/util'
+import { useAuth } from '../../common/store/auth'
+import { navigateTo } from '../../common/nav'
+import NavBack from '../../components/nav-back/nav-back.vue'
 
 /**
  * 轮排：人数多于同时上场人数时，按轮安排谁上场、谁休息。
@@ -19,10 +22,30 @@ const players = ref([])
 const courts = ref(2)
 const rounds = ref(6)
 const format = ref(2) // 1 单打 2 双打
+/** 双打怎么配队：0 不分性别 1 男双 2 女双 3 混双 4 男女分场（男双+女双同时进行） */
+const genderRule = ref(0)
+const genderRules = [
+  { value: 0, label: '不分性别' },
+  { value: 3, label: '混双（一男一女）' },
+  { value: 1, label: '男双' },
+  { value: 2, label: '女双' },
+  { value: 4, label: '男女分场' },
+]
 const balance = ref(true)
 
 const result = ref(null)
 const loading = ref(false)
+
+const { isLoggedIn, user } = useAuth()
+/** 真实球局模式：只有发起人能生成轮排表（后端同样校验） */
+const isGameCreator = computed(
+  () => !!selectedGame.value && !!user.value && selectedGame.value.creatorId === user.value.userId,
+)
+
+/** 现场计分弹层 */
+const scoreVisible = ref(false)
+const scoring = ref(false)
+const scoreForm = ref({ matchId: 0, round: 0, court: 0, scoreA: '', scoreB: '' })
 
 const perMatch = computed(() => (format.value === 1 ? 2 : 4))
 const onCourt = computed(() => Math.min(courts.value, Math.floor(peopleCount.value / perMatch.value)) * perMatch.value)
@@ -31,6 +54,32 @@ const canGenerate = computed(() =>
   mode.value === 'game' ? games.value.length > 0 : players.value.length >= perMatch.value,
 )
 const selectedGame = computed(() => games.value[gameIndex.value] || null)
+/** 报名男女统计：小程序端直接按轮排名单里的性别字段算，不依赖后端接口 */
+const genderStat = computed(() => {
+  const list = (result.value && result.value.players) || []
+  let male = 0
+  let female = 0
+  list.forEach((p) => {
+    if (p.gender === 1) male += 1
+    else if (p.gender === 2) female += 1
+  })
+  return { total: list.length, male, female }
+})
+/** 局内得分排名：按胜场降序，再按 ELO 变化、局内得分、总 ELO 降序 */
+const rankedStats = computed(() => {
+  const list = (result.value && result.value.stats) || []
+  return [...list].sort((a, b) => {
+    if (b.winCount !== a.winCount) return b.winCount - a.winCount
+    if ((b.eloDelta || 0) !== (a.eloDelta || 0)) return (b.eloDelta || 0) - (a.eloDelta || 0)
+    if ((b.points || 0) !== (a.points || 0)) return (b.points || 0) - (a.points || 0)
+    return (b.rating || 0) - (a.rating || 0)
+  })
+})
+
+function eloDeltaText(value) {
+  const n = value || 0
+  return n > 0 ? `ELO +${n}` : `ELO ${n}`
+}
 
 function rebuildPlayers() {
   const n = Number(peopleCount.value)
@@ -52,10 +101,24 @@ function shuffleRatings() {
 watch(peopleCount, rebuildPlayers, { immediate: true })
 
 onLoad((options) => {
-  loadGames(options)
+  const gameId = options && options.gameId ? Number(options.gameId) : null
+  if (gameId) {
+    mode.value = 'game'
+    getGame(gameId).then((g) => {
+      games.value = [g]
+      gameIndex.value = 0
+      loadSaved()
+    }).catch(() => {
+      games.value = [{ id: gameId, title: '加载失败', registeredCount: 0, registrations: [] }]
+      gameIndex.value = 0
+      loadSaved()
+    })
+  } else {
+    loadGames()
+  }
 })
 
-async function loadGames(options) {
+async function loadGames() {
   try {
     games.value = await listGames()
   } catch (e) {
@@ -68,10 +131,46 @@ async function loadGames(options) {
       mode.value = 'game'
     }
   }
+  await loadSaved()
 }
 
-function onGameChange(evt) {
+/** 真实球局：把上次生成过的轮排表读回来（含已录比分），没生成过就留空等生成 */
+async function loadSaved() {
+  if (mode.value !== 'game' || !selectedGame.value) {
+    result.value = null
+    return
+  }
+  try {
+    const saved = await getRotationForGame(selectedGame.value.id)
+    result.value = saved || null
+    if (saved) {
+      // 回填上次的参数，点「重新生成」时沿用同样的场地 / 轮数 / 赛制
+      courts.value = saved.courts
+      rounds.value = saved.rounds
+      format.value = saved.format
+    }
+  } catch (e) {
+    result.value = null
+  }
+}
+
+function goToGameDetail() {
+  navigateTo(`/pages/detail/detail?id=${selectedGame.value.id}`)
+}
+
+function switchMode(next) {
+  if (mode.value === next) return
+  mode.value = next
+  if (next === 'game') {
+    loadSaved()
+  } else {
+    result.value = null
+  }
+}
+
+async function onGameChange(evt) {
   gameIndex.value = Number(evt.detail.value)
+  await loadSaved()
 }
 
 async function generate() {
@@ -88,6 +187,7 @@ async function generate() {
       courts: Number(courts.value),
       rounds: Number(rounds.value),
       format: Number(format.value),
+      genderRule: Number(genderRule.value),
       balanceStrength: balance.value,
       players: players.value,
     }
@@ -105,21 +205,101 @@ async function generate() {
 function namesOf(list) {
   return (list || []).map((p) => p.label).join(' / ')
 }
+
+function nameInitial(name) {
+  return (name || '球友').charAt(0)
+}
+
+/** 轮排表球员名只显示前 3 个字，避免卡片内拥挤 */
+function shortName(name) {
+  const n = name || ''
+  return n.length > 3 ? n.slice(0, 3) : n
+}
+
+/** 按 userId 稳定取头像背景色（同个球员颜色永远一样） */
+function colorOf(userId) {
+  const idx = (Number(userId) || 0) % AVATAR_COLORS.length
+  return AVATAR_COLORS[idx]
+}
+
+function playerAvatar(p) {
+  if (!p) return ''
+  return p.avatar || ''
+}
+
+/* ---------- 现场计分 ---------- */
+
+function openScore(match, round) {
+  if (!match.matchId) return
+  if (!isLoggedIn.value) {
+    navigateTo('/pages/auth/auth')
+    return
+  }
+  scoreForm.value = {
+    matchId: match.matchId,
+    round,
+    court: match.court,
+    scoreA: match.winner ? String(match.scoreA) : '',
+    scoreB: match.winner ? String(match.scoreB) : '',
+  }
+  scoreVisible.value = true
+}
+
+function closeScore() {
+  if (!scoring.value) scoreVisible.value = false
+}
+
+async function submitScore() {
+  const a = Number(scoreForm.value.scoreA)
+  const b = Number(scoreForm.value.scoreB)
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) {
+    uni.showToast({ title: '请输入双方比分', icon: 'none' })
+    return
+  }
+  if (a === b) {
+    uni.showToast({ title: '比分不能相同', icon: 'none' })
+    return
+  }
+  scoring.value = true
+  try {
+    const res = await scoreMatch(scoreForm.value.matchId, a, b)
+    const round = result.value.rotation.find((r) => r.round === scoreForm.value.round)
+    const m = round && round.matches.find((x) => x.matchId === scoreForm.value.matchId)
+    if (m) {
+      m.scoreA = a
+      m.scoreB = b
+      m.winner = res.winner
+    }
+    uni.showToast({
+      title: res && res.gameFinished ? '比分已录入，球局结束' : '比分已录入',
+      icon: 'success',
+    })
+    scoreVisible.value = false
+    await loadSaved()
+  } catch (e) {
+    toastError(e, '计分失败')
+  } finally {
+    scoring.value = false
+  }
+}
 </script>
 
 <template>
   <view class="page">
+    <NavBack />
+
     <scroll-view class="body" scroll-y>
       <view class="hero">
         <view class="hero-title">轮排</view>
         <view class="hero-desc">
-          人多场少时按轮轮换上场：每人上场次数差不超过 1 轮，尽量避免重复搭档，每场两队实力接近。
+          人多场少时按轮轮换上场：每人上场次数差不超过 1 轮，尽量避免重复搭档，
+          组队用 ELO 期望胜率做均衡（让每场双方的预期胜率尽量接近 50%）。
         </view>
       </view>
 
       <view class="tabs">
-        <view :class="['tab', { active: mode === 'quick' }]" @click="mode = 'quick'">快速名单</view>
-        <view :class="['tab', { active: mode === 'game' }]" @click="mode = 'game'">真实球局</view>
+        <view :class="['tab', { active: mode === 'quick' }]" @click="switchMode('quick')">快速名单</view>
+        <view :class="['tab', { active: mode === 'game' }]" @click="switchMode('game')">真实球局</view>
       </view>
 
       <view class="panel">
@@ -130,6 +310,15 @@ function namesOf(list) {
               {{ selectedGame ? selectedGame.title + `（${selectedGame.registeredCount} 人已报名）` : '暂无球局' }}
             </view>
           </picker>
+          <view v-if="mode === 'game' && result" class="gender-stat">
+            <text class="stat-item">已报名 {{ genderStat.total }} 人</text>
+            <text class="stat-item">男 {{ genderStat.male }} 人</text>
+            <text class="stat-item">女 {{ genderStat.female }} 人</text>
+          </view>
+          <view v-if="mode === 'game' && result && genderStat.male === 0 && genderStat.female === 0" class="gender-warning">
+            <text>报名者尚未填写性别，无法按性别规则编排。</text>
+            <text>请让报名者到「我的 → 编辑资料」填写性别。</text>
+          </view>
         </view>
 
         <view v-else class="field">
@@ -158,8 +347,24 @@ function namesOf(list) {
             <view :class="['seg-item', { active: format === 1 }]" @click="format = 1">单打（2 人/场）</view>
           </view>
         </view>
+        <view v-if="format === 2" class="field">
+          <text class="label">性别规则</text>
+          <view class="chips">
+            <view
+              v-for="g in genderRules"
+              :key="g.value"
+              :class="['chip', { active: genderRule === g.value }]"
+              @click="genderRule = g.value"
+            >
+              {{ g.label }}
+            </view>
+          </view>
+          <text v-if="mode === 'quick' && genderRule !== 0" class="hint">
+            快速名单没有性别信息，性别规则请在「真实球局」模式下使用
+          </text>
+        </view>
         <view class="row">
-          <text class="label">实力均衡</text>
+          <text class="label">按 ELO 均衡实力</text>
           <switch :checked="balance" color="#14665B" @change="balance = $event.detail.value" />
         </view>
 
@@ -168,42 +373,125 @@ function namesOf(list) {
           <text v-if="restingPerRound"> · {{ restingPerRound }} 人休息</text>
         </view>
 
-        <button class="run" type="button" :loading="loading" @click="generate">生成轮排表</button>
+        <template v-if="mode === 'game' && !isGameCreator">
+          <view class="creator-only-tip">轮排表由发起人生成，其他人只可查看</view>
+          <button class="run ghost" type="button" @click="goToGameDetail">
+            返回球局详情
+          </button>
+        </template>
+        <button v-else class="run" type="button" :loading="loading" @click="generate">
+          {{ result && mode === 'game' ? '重新生成轮排表' : '生成轮排表' }}
+        </button>
       </view>
 
       <view v-if="result" class="result">
         <view class="result-title">轮排表 · {{ result.formatName }} · {{ result.courts }} 片场地</view>
+        <text v-if="mode === 'game'" class="result-tip">已保存到服务器，退出后回来还在</text>
 
         <view v-for="r in result.rotation" :key="r.round" class="round">
           <view class="round-head">
             <text class="round-no">第 {{ r.round }} 轮</text>
-            <text v-if="r.resting.length" class="round-rest">休息：{{ namesOf(r.resting) }}</text>
+            <view v-if="r.resting.length" class="round-rest">
+              <text class="rest-label">休息：</text>
+              <view class="mini-list">
+                <view
+                  v-for="(p, i) in r.resting"
+                  :key="`rest-${r.round}-${p.userId}-${i}`"
+                  class="mini-player"
+                >
+                  <image
+                    v-if="playerAvatar(p)"
+                    class="mini-avatar-img"
+                    :src="resolveUrl(playerAvatar(p))"
+                    mode="aspectFill"
+                  />
+                  <view v-else class="mini-avatar" :style="{ background: colorOf(p.userId) }">{{ nameInitial(p.label) }}</view>
+                  <text class="mini-name">{{ shortName(p.label) }}</text>
+                </view>
+              </view>
+            </view>
             <text v-else class="round-rest">全员上场</text>
           </view>
-          <view v-for="m in r.matches" :key="m.court" class="court">
-            <view class="court-head">
-              <text class="court-no">{{ m.court }} 号场</text>
-              <text class="court-score">{{ m.sumA }} vs {{ m.sumB }}</text>
+          <!-- 多片场地合并到一个组合网格里显示 -->
+          <view class="court-grid" style="gridTemplateColumns: 1fr">
+            <view
+              v-for="m in r.matches"
+              :key="m.court"
+              :class="['court', { scored: m.winner }]"
+              hover-class="court-hv"
+              hover-stay-time="120"
+              @click="openScore(m, r.round)"
+            >
+              <view class="court-head">
+                <text class="court-no">{{ m.court }} 号场 · {{ m.formatName || '双打' }}</text>
+                <text v-if="m.winner" class="court-score">{{ m.scoreA }} : {{ m.scoreB }}</text>
+                <text v-else-if="m.matchId" class="court-score todo">录比分 ›</text>
+                <text v-else class="court-score">试算</text>
+              </view>
+              <view v-if="m.expectedA" class="court-elo">
+                ELO 预期胜率：A 队 {{ Math.round(m.expectedA * 100) }}% · B 队
+                {{ 100 - Math.round(m.expectedA * 100) }}%
+              </view>
+              <view class="court-vs">
+                <view class="vs-list left">
+                  <view
+                    v-for="(p, i) in m.teamA || []"
+                    :key="`a-${r.round}-${m.court}-${p.userId}-${i}`"
+                    class="mini-player"
+                  >
+                    <image
+                      v-if="playerAvatar(p)"
+                      class="mini-avatar-img"
+                      :src="resolveUrl(playerAvatar(p))"
+                      mode="aspectFill"
+                    />
+                    <view v-else class="mini-avatar" :style="{ background: colorOf(p.userId) }">{{ nameInitial(p.label) }}</view>
+                    <text class="mini-name">{{ shortName(p.label) }}</text>
+                  </view>
+                </view>
+                <text class="vs-tag">VS</text>
+                <view class="vs-list right">
+                  <view
+                    v-for="(p, i) in m.teamB || []"
+                    :key="`b-${r.round}-${m.court}-${p.userId}-${i}`"
+                    class="mini-player"
+                  >
+                    <image
+                      v-if="playerAvatar(p)"
+                      class="mini-avatar-img"
+                      :src="resolveUrl(playerAvatar(p))"
+                      mode="aspectFill"
+                    />
+                    <view v-else class="mini-avatar" :style="{ background: colorOf(p.userId) }">{{ nameInitial(p.label) }}</view>
+                    <text class="mini-name">{{ shortName(p.label) }}</text>
+                  </view>
+                </view>
+              </view>
             </view>
-            <view class="side">A：{{ namesOf(m.teamA) }}</view>
-            <view class="side">B：{{ namesOf(m.teamB) }}</view>
-          </view>
-        </view>
-
-        <view class="result-title">上场统计</view>
-        <view class="stats">
-          <view v-for="s in result.stats" :key="s.userId" class="stat">
-            <text class="stat-name">{{ s.label }}</text>
-            <text class="stat-meta">{{ genderText(s.gender) }} · ELO {{ s.rating }}</text>
-            <view class="stat-bar">
-              <view class="bar-play" :style="{ flex: s.playCount }"></view>
-              <view class="bar-rest" :style="{ flex: s.restCount }"></view>
-            </view>
-            <text class="stat-count">上场 {{ s.playCount }} · 休息 {{ s.restCount }}</text>
           </view>
         </view>
       </view>
     </scroll-view>
+
+    <!-- 计分弹层：点场地后录入本场比分，胜方自动判定 -->
+    <view v-if="scoreVisible" class="mask" @click="closeScore">
+      <view class="picker" @click.stop>
+        <view class="picker-head">
+          <text class="picker-title">录入比分 · 第 {{ scoreForm.round }} 轮 {{ scoreForm.court }} 号场</text>
+          <text class="picker-close" @click="closeScore">✕</text>
+        </view>
+        <view class="score-row">
+          <text class="score-side">A 队</text>
+          <input class="score-input" type="number" v-model="scoreForm.scoreA" placeholder="0" />
+          <text class="score-colon">:</text>
+          <input class="score-input" type="number" v-model="scoreForm.scoreB" placeholder="0" />
+          <text class="score-side">B 队</text>
+        </view>
+        <view class="score-tip">胜方按比分自动判定，例如 21 : 15</view>
+        <button class="run picker-go" type="button" :loading="scoring" @click="submitScore">保存比分</button>
+      </view>
+    </view>
+
   </view>
 </template>
 
@@ -211,6 +499,7 @@ function namesOf(list) {
 .page {
   min-height: 100vh;
   background: #faf7f0;
+  padding-bottom: env(safe-area-inset-bottom);
 }
 .body {
   padding: 16px 16px 40px;
@@ -280,6 +569,12 @@ function namesOf(list) {
   gap: 6px;
   margin-top: 10px;
 }
+.hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #5a726d;
+}
 .chip {
   padding: 4px 10px;
   border: 1px solid #e3e8e6;
@@ -287,6 +582,17 @@ function namesOf(list) {
   background: #faf7f0;
   color: #5a726d;
   font-size: 11px;
+}
+.chip.active {
+  background: #14665b;
+  border-color: #14665b;
+  color: #faf7f0;
+  font-weight: 700;
+}
+.court-elo {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #5a726d;
 }
 .seg {
   display: flex;
@@ -315,6 +621,31 @@ function namesOf(list) {
   font-size: 13px;
   color: #1a2e2a;
 }
+.gender-stat {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f0f5f3;
+}
+.stat-item {
+  font-size: 12px;
+  font-weight: 600;
+  color: #14665b;
+}
+.gender-warning {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fff3f0;
+}
+.gender-warning text {
+  display: block;
+  font-size: 12px;
+  color: #b33a2e;
+  line-height: 1.6;
+}
 .summary {
   margin-top: 10px;
   font-size: 12px;
@@ -330,6 +661,20 @@ function namesOf(list) {
   color: #1a2e2a;
   font-size: 15px;
   font-weight: 700;
+}
+.run.ghost {
+  border: 1px solid #14665b;
+  background: #ffffff;
+  color: #14665b;
+}
+.creator-only-tip {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f0f5f3;
+  font-size: 12px;
+  color: #5a726d;
+  text-align: center;
 }
 
 .result {
@@ -350,8 +695,9 @@ function namesOf(list) {
 }
 .round-head {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
   margin-bottom: 8px;
 }
 .round-no {
@@ -360,14 +706,83 @@ function namesOf(list) {
   color: #14665b;
 }
 .round-rest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
   font-size: 11px;
   color: #5a726d;
 }
+.rest-label {
+  font-size: 11px;
+  color: #5a726d;
+}
+.mini-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.mini-player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  max-width: 56px;
+  text-align: center;
+}
+.mini-avatar,
+.mini-avatar-img {
+  width: 45px;
+  height: 45px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mini-name {
+  font-size: 11px;
+  color: #1a2e2a;
+  max-width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.court-vs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 6px 0 2px;
+}
+.vs-list {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.vs-list.right {
+}
+.vs-tag {
+  flex: 0 0 auto;
+  font-size: 13px;
+  font-weight: 800;
+  color: #14665b;
+  letter-spacing: 0.5px;
+}
 .court {
   padding: 10px;
-  margin-bottom: 8px;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #faf7f0;
+}
+.court-grid {
+  display: grid;
+  gap: 8px;
 }
 .court-head {
   display: flex;
@@ -425,6 +840,103 @@ function namesOf(list) {
   background: #d8e2de;
 }
 .stat-count {
+  font-size: 11px;
+  color: #5a726d;
+}
+.elo-delta {
+  font-weight: 700;
+  color: #5a726d;
+}
+.elo-delta.up {
+  color: #14665b;
+}
+.elo-delta.down {
+  color: #b33a2e;
+}
+.result-tip {
+  display: block;
+  padding-bottom: 8px;
+  font-size: 11px;
+  color: #5a726d;
+}
+.court-hv {
+  background: #f2ece1;
+}
+.court.scored {
+  border: 1px solid #14665b;
+}
+.court-score.todo {
+  color: #14665b;
+  font-weight: 700;
+}
+.mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 100;
+}
+.picker {
+  width: 100%;
+  max-height: 70vh;
+  padding: 16px;
+  border-radius: 16px 16px 0 0;
+  background: #ffffff;
+  box-sizing: border-box;
+}
+.picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.picker-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: #1a2e2a;
+}
+.picker-close {
+  font-size: 18px;
+  color: #5a726d;
+  padding: 4px;
+}
+.picker-go {
+  margin-top: 4px;
+}
+.score-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 0 4px;
+}
+.score-side {
+  width: 40px;
+  text-align: center;
+  font-size: 13px;
+  color: #5a726d;
+}
+.score-input {
+  width: 76px;
+  height: 44px;
+  border: 1px solid #e3e8e6;
+  border-radius: 10px;
+  background: #fbfaf5;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 800;
+  color: #1a2e2a;
+}
+.score-colon {
+  font-size: 18px;
+  font-weight: 800;
+  color: #c9d2cf;
+}
+.score-tip {
+  padding-bottom: 12px;
+  text-align: center;
   font-size: 11px;
   color: #5a726d;
 }

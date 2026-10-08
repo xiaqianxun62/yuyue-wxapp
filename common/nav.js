@@ -10,7 +10,7 @@
  * 小程序 / App 端条件编译后只剩原生 uni.navigateTo / uni.switchTab。
  */
 
-export function navigateTo(url) {
+export function navigateTo(url, opts = {}) {
   // #ifdef H5
   const app = typeof getApp === 'function' ? getApp() : null
   if (!app || !app.$router) {
@@ -18,7 +18,7 @@ export function navigateTo(url) {
     return
   }
   // #endif
-  uni.navigateTo({ url })
+  uni.navigateTo({ url, ...opts })
 }
 
 export function switchTab(url) {
@@ -41,4 +41,17 @@ export function navigateBack(delta = 1) {
   }
   // #endif
   uni.navigateBack({ delta })
+}
+
+/**
+ * 返回上一页；已经是栈底（分享 / 扫码 / 刷新直接进来的页面）时退到首页。
+ * 直接 navigateBack 在栈深为 1 时会失败，用户会被卡在当前页。
+ */
+export function backOrHome(homeUrl = '/pages/index/index', delta = 1) {
+  const pages = typeof getCurrentPages === 'function' ? getCurrentPages() : []
+  if (pages && pages.length > 1) {
+    navigateBack(delta)
+  } else {
+    switchTab(homeUrl)
+  }
 }

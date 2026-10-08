@@ -1,39 +1,199 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { onLoad, onPullDownRefresh } from '@dcloudio/uni-app'
-import { ARRANGE_SCHEMES, GAME_STATUS, MATCH_FORMAT, arrangeGame, getGame, registerGame } from '../../common/api/game'
-import { AVATAR_COLORS, genderText, shortDate, shortTime, toastError } from '../../common/util'
+import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
+import { ARRANGE_SCHEMES, GAME_STATUS, MATCH_FORMAT, arrangeGame, cancelRegisterGame, deleteGame, getGame, getGameMatches, hideGame, registerGame, scoreMatch, unhideGame } from '../../common/api/game'
+import { getRotationForGame } from '../../common/api/rotation'
+import { AVATAR_COLORS, genderText, resolveUrl, shortDate, shortTime, toastError } from '../../common/util'
 import { useAuth } from '../../common/store/auth'
 import { navigateTo } from '../../common/nav'
+import NavBack from '../../components/nav-back/nav-back.vue'
 
 const { isLoggedIn, user } = useAuth()
 
 const gameId = ref(0)
 const game = ref(null)
 const loading = ref(false)
+const activeTab = ref('报名名单')
+const tabs = ['报名名单', '轮排安排', '轮排结果', '局内得分排名']
 const arranging = ref(false)
 const matches = ref(null)
 const joining = ref(false)
+const canceling = ref(false)
 const pickerVisible = ref(false)
 const roundRobin = ref(false)
 const schemeId = ref(0)
+/** 计分弹层 */
+const scoreVisible = ref(false)
+const scoring = ref(false)
+const scoreForm = ref({ matchId: 0, scoreA: '', scoreB: '' })
+/** 轮排统计：局内得分排名（已编排的球局才有） */
+const rotationStats = ref([])
 
 const statusInfo = computed(() => GAME_STATUS[game.value ? game.value.status : 0])
+/** 轮排结果 / 得分排名页签下隐藏球局头卡与报名操作，把屏幕让给对阵表 */
+const showOverview = computed(
+  () => activeTab.value === '报名名单' || activeTab.value === '轮排安排',
+)
+/** 现场报名球局：没有时间地点，人齐后现场编排开打 */
+/** 只有发起人能拍板编排方案（管理员例外） */
+const canManage = computed(
+  () => !!(game.value && user.value && (game.value.creatorId === user.value.userId || user.value.isAdmin)),
+)
+
+const isOnsite = computed(() => !!game.value && game.value.mode === 1)
+/** 只有发起人能拍板编排方案 */
+const isCreator = computed(
+  () => !!(game.value && user.value && game.value.creatorId === user.value.userId),
+)
+const canArrange = computed(
+  () =>
+    !!game.value &&
+    game.value.status === 0 &&
+    canManage.value &&
+    game.value.registrations.length >= 4,
+)
 const registered = computed(() => {
   if (!game.value || !user.value) return false
-  return game.value.registrations.some((r) => r.anonymousName === user.value.name)
+  return game.value.registrations.some((r) => r.userId === user.value.userId)
 })
+/** 球局是否已满员（报名数 ≥ 人数上限） */
+const isFull = computed(
+  () =>
+    !!game.value &&
+    (game.value.registeredCount || 0) >= (game.value.maxPlayers || 0),
+)
+/** 报名男女统计：小程序端直接按名单里的性别字段算，不用额外请求 */
+const genderStat = computed(() => {
+  const list = (game.value && game.value.registrations) || []
+  let male = 0
+  let female = 0
+  list.forEach((r) => {
+    if (r.gender === 1) male += 1
+    else if (r.gender === 2) female += 1
+  })
+  return { total: list.length, male, female }
+})
+
+/** 地图标记 */
+const courtMarkers = computed(() => {
+  const g = game.value
+  if (!g?.courtLat || !g?.courtLng) return []
+  return [{
+    id: 1,
+    latitude: Number(g.courtLat),
+    longitude: Number(g.courtLng),
+    title: g.courtName || g.location || '球场位置',
+    width: 28,
+    height: 36,
+  }]
+})
+
+/** 点击地图 → 打开原生地图查看（微信小程序/H5 都支持） */
+function openCourtMap() {
+  const g = game.value
+  if (!g?.courtLat || !g?.courtLng) return
+  uni.openLocation({
+    latitude: Number(g.courtLat),
+    longitude: Number(g.courtLng),
+    name: g.courtName || g.location || '球场位置',
+    address: g.location || '',
+    scale: 16,
+  })
+}
+
+/** 发起人信息：从 game.creator* 字段直接取，不依赖 registrations */
+const creatorInfo = computed(() => {
+  const g = game.value
+  console.log('[creatorInfo] game keys:', g ? Object.keys(g) : null, 'creatorName:', g?.creatorName, 'creatorId:', g?.creatorId)
+  if (!g || !g.creatorId) return null
+  return {
+    userId: g.creatorId,
+    displayName: g.creatorName || '球友',
+    avatar: g.creatorAvatar || null,
+    gender: g.creatorGender || 0,
+    rating: g.creatorRating || 0,
+  }
+})
+
+/** 局内得分排名：按胜场降序，再按净胜分、总 ELO 降序 */
+const rankedStats = computed(() => {
+  return [...rotationStats.value].sort((a, b) => {
+    if ((b.winCount || 0) !== (a.winCount || 0)) return (b.winCount || 0) - (a.winCount || 0)
+    if ((b.points || 0) !== (a.points || 0)) return (b.points || 0) - (a.points || 0)
+    return (b.rating || 0) - (a.rating || 0)
+  })
+})
+
+/**
+ * 把扁平的 matches.matches 按 round × court 分组。
+ * GameMatchesResponse.MatchItem 没有 round/court 字段，
+ * 但编排引擎输出顺序是：先第 1 轮所有场地，再第 2 轮...
+ * 所以用 game.courtCount 推算：roundIdx = Math.floor(i / courtCount)
+ */
+const roundGroups = computed(() => {
+  const flat = (matches.value && matches.value.matches) || []
+  const courtCount = (game.value && game.value.courtCount) || 1
+  const groups = []
+  for (let i = 0; i < flat.length; i += courtCount) {
+    const slice = flat.slice(i, i + courtCount)
+    const roundNo = Math.floor(i / courtCount) + 1
+    // 给每个 match 补上推算的 court 号（1-based）
+    const matchesWithCourt = slice.map((m, j) => ({ ...m, court: j + 1, round: roundNo }))
+    groups.push({ round: roundNo, matches: matchesWithCourt })
+  }
+  return groups
+})
+
+function eloDeltaText(value) {
+  const n = value || 0
+  return n > 0 ? `+${n}` : `${n}`
+}
+
+/** 昵称超过 5 字截断为前 3 字 + 省略号 */
+function truncateName(name) {
+  if (!name) return ''
+  return name.length > 5 ? name.slice(0, 3) + '…' : name
+}
 
 async function load() {
   if (!gameId.value) return
   loading.value = true
   try {
     game.value = await getGame(gameId.value)
+    // 对阵与统计并行拉取，避免串行瀑布拖慢整页
+    await Promise.all([loadMatches(), loadRotationStats()])
   } catch (e) {
     toastError(e, '球局加载失败')
   } finally {
     loading.value = false
     uni.stopPullDownRefresh()
+  }
+}
+
+/** 编排后的对阵与比分：落库保存，所有人看到的都是同一份 */
+async function loadMatches() {
+  if (!game.value || game.value.status === 0) {
+    matches.value = null
+    return
+  }
+  try {
+    matches.value = await getGameMatches(gameId.value)
+  } catch (e) {
+    matches.value = null
+  }
+}
+
+/** 轮排统计：局内得分排名（已编排的球局才有，未编排时为空） */
+async function loadRotationStats() {
+  if (!game.value || game.value.status === 0) {
+    rotationStats.value = []
+    return
+  }
+  try {
+    const res = await getRotationForGame(gameId.value)
+    rotationStats.value = (res && res.stats) || []
+  } catch (e) {
+    rotationStats.value = []
   }
 }
 
@@ -46,9 +206,34 @@ onPullDownRefresh(() => {
   load()
 })
 
+onShow(() => {
+  // 从轮排页返回后，比分 / 得分排名可能已更新，重新拉一次（并行）
+  if (game.value) {
+    Promise.all([loadMatches(), loadRotationStats()])
+  }
+})
+
+/** 底部 Tab：轮排安排仅发起人可进入，其余在本页切换 */
+function onTabClick(tab) {
+  if (tab === '轮排安排') {
+    if (!isCreator.value) {
+      uni.showToast({ title: '轮排安排仅发起人可操作', icon: 'none' })
+      return
+    }
+    navigateTo(`/pages/rotation/rotation?gameId=${gameId.value}`)
+    return
+  }
+  activeTab.value = tab
+}
+
 async function join() {
   if (!isLoggedIn.value) {
     navigateTo('/pages/auth/auth')
+    return
+  }
+  // 满员拦截
+  if (isFull.value) {
+    uni.showToast({ title: '该球局已满员', icon: 'none' })
     return
   }
   joining.value = true
@@ -63,13 +248,81 @@ async function join() {
   }
 }
 
-function goRotation() {
-  navigateTo(`/pages/rotation/rotation?gameId=${gameId.value}`)
+/** 取消报名：二次确认后释放名额 */
+async function cancelJoin() {
+  const confirmed = await new Promise((resolve) => {
+    uni.showModal({
+      title: '取消报名',
+      content: '取消后名额立即释放，确定要取消吗？',
+      success: (res) => resolve(!!res.confirm),
+      fail: () => resolve(false),
+    })
+  })
+  if (!confirmed) return
+  canceling.value = true
+  try {
+    await cancelRegisterGame(gameId.value)
+    uni.showToast({ title: '已取消报名', icon: 'success' })
+    matches.value = null
+    await load()
+  } catch (e) {
+    toastError(e, '取消失败')
+  } finally {
+    canceling.value = false
+  }
 }
 
-function nameOf(id) {
-  const reg = game.value && game.value.registrations.find((r) => r.userId === id)
-  return reg ? reg.anonymousName : String(id)
+/** 编辑球局：复用 create 页面（URL 带 id = 进入编辑模式） */
+function editGame() {
+  navigateTo(`/pages/create/create?id=${gameId.value}`)
+}
+
+/** 删除球局：二次确认后软删 + 级联清报名 */
+async function deleteThisGame() {
+  const confirmed = await new Promise((resolve) => {
+    uni.showModal({
+      title: '删除球局',
+      content: '确定要删除这场球局吗？所有已报名记录也会一并清除。',
+      confirmColor: '#b33a2e',
+      success: (res) => resolve(!!res.confirm),
+      fail: () => resolve(false),
+    })
+  })
+  if (!confirmed) return
+  try {
+    await deleteGame(gameId.value)
+    uni.showToast({ title: '球局已删除', icon: 'success' })
+    setTimeout(() => uni.navigateBack(), 500)
+  } catch (e) {
+    toastError(e, '删除失败')
+  }
+}
+
+/** 发起人/管理员：隐藏球局（不再首页列表显示，但详情页仍可访问） */
+async function toggleHidden() {
+  const hiding = !game.value?.hidden
+  const confirmed = await new Promise((resolve) => {
+    uni.showModal({
+      title: hiding ? '隐藏球局' : '恢复球局',
+      content: hiding ? '隐藏后这场球局将不在首页广场显示。确定吗？' : '恢复后球局会重新出现在首页广场。',
+      confirmColor: '#b33a2e',
+      success: (res) => resolve(!!res.confirm),
+      fail: () => resolve(false),
+    })
+  })
+  if (!confirmed) return
+  try {
+    if (hiding) await hideGame(gameId.value)
+    else await unhideGame(gameId.value)
+    uni.showToast({ title: hiding ? '已隐藏' : '已恢复', icon: 'success' })
+    game.value.hidden = hiding ? 1 : 0
+  } catch (e) {
+    toastError(e, hiding ? '隐藏失败' : '恢复失败')
+  }
+}
+
+function goRotation() {
+  navigateTo(`/pages/rotation/rotation?gameId=${gameId.value}`)
 }
 
 /** 点击编排：弹出方案选择面板（微信小程序 ActionSheet 最多 6 项，故用自绘弹层） */
@@ -84,8 +337,7 @@ function closePicker() {
 async function doArrange(schemeId, roundRobin) {
   arranging.value = true
   try {
-    const res = await arrangeGame(gameId.value, { schemeId, roundRobin })
-    matches.value = res
+    await arrangeGame(gameId.value, { schemeId, roundRobin })
     pickerVisible.value = false
     uni.showToast({ title: '编排完成', icon: 'success' })
     await load()
@@ -96,74 +348,372 @@ async function doArrange(schemeId, roundRobin) {
   }
 }
 
+/* ---------- 现场计分 ---------- */
+
+function openScore(match) {
+  if (!isLoggedIn.value) {
+    navigateTo('/pages/auth/auth')
+    return
+  }
+  // 已计分的场次带出原比分，方便改分
+  scoreForm.value = {
+    matchId: match.matchId,
+    scoreA: match.winner ? String(match.scoreA) : '',
+    scoreB: match.winner ? String(match.scoreB) : '',
+  }
+  scoreVisible.value = true
+}
+
+function closeScore() {
+  if (!scoring.value) scoreVisible.value = false
+}
+
+async function submitScore() {
+  const a = Number(scoreForm.value.scoreA)
+  const b = Number(scoreForm.value.scoreB)
+  if (!Number.isInteger(a) || !Number.isInteger(b) || a < 0 || b < 0) {
+    uni.showToast({ title: '请输入双方比分', icon: 'none' })
+    return
+  }
+  if (a === b) {
+    uni.showToast({ title: '比分不能相同', icon: 'none' })
+    return
+  }
+  scoring.value = true
+  try {
+    const res = await scoreMatch(scoreForm.value.matchId, a, b)
+    uni.showToast({
+      title: res && res.gameFinished ? '比分已录入，球局结束' : '比分已录入',
+      icon: 'success',
+    })
+    scoreVisible.value = false
+    await load()
+  } catch (e) {
+    toastError(e, '计分失败')
+  } finally {
+    scoring.value = false
+  }
+}
+
 function colorOf(index) {
   return AVATAR_COLORS[index % AVATAR_COLORS.length]
+}
+
+function nameInitial(name) {
+  return (name || '球友').charAt(0)
+}
+
+/** 个人头像 URL：兼容旧后端的 avatar 字段，或新 displayAvatar.imageUrl */
+function realAvatarOf(r) {
+  if (!r) return ''
+  if (r.avatar) return r.avatar
+  if (r.displayAvatar && r.displayAvatar.imageUrl) return r.displayAvatar.imageUrl
+  return ''
+}
+
+function playerOf(userId, fallbackName) {
+  const r = (game.value && game.value.registrations || []).find(
+    (reg) => String(reg.userId) === String(userId),
+  )
+  const name = fallbackName || r?.displayName || '球友'
+  return {
+    userId,
+    name,
+    avatar: realAvatarOf(r),
+    // 轮排不使用系统匿名形象，无个人头像时用姓名首字兜底
+    avatarView: null,
+  }
+}
+
+function sidePlayers(team, names) {
+  return (team || []).map((id, i) => playerOf(id, names?.[i]))
 }
 </script>
 
 <template>
   <view class="page">
+    <NavBack />
+
     <view v-if="!game" class="state">{{ loading ? '加载中…' : '球局不存在' }}</view>
 
     <view v-else class="content">
-      <view class="head">
+      <view v-if="showOverview" class="head">
         <view class="head-top">
           <text class="title">{{ game.title }}</text>
           <text :class="['badge', statusInfo.type]">{{ statusInfo.text }}</text>
         </view>
+        <view class="line mode-line">
+          <text class="mode-badge">{{ isOnsite ? '现场报名' : '预报名' }}</text>
+          <text>{{ game.courtCount || 1 }} 片场地</text>
+        </view>
         <view class="line">
           <uni-icons type="calendar" size="14" color="#5A726D" />
-          <text>{{ shortDate(game.playDate) }} {{ shortTime(game.startTime) }}-{{ shortTime(game.endTime) }}</text>
+          <text v-if="isOnsite">{{ game.playDate ? `今天 ${shortDate(game.playDate)} · 人齐后现场开打` : '时间待定 · 人齐后现场开打' }}</text>
+          <text v-else>{{ shortDate(game.playDate) }} {{ shortTime(game.startTime) }}-{{ shortTime(game.endTime) }}</text>
         </view>
         <view class="line">
           <uni-icons type="location" size="14" color="#5A726D" />
-          <text>{{ game.location || '地点待定' }}</text>
+          <text>{{ game.location || game.courtName || '地点待定' }}</text>
+          <text v-if="game.courtName && game.location !== game.courtName && game.location" class="location-alt">（{{ game.courtName }}）</text>
+        </view>
+        <!-- 静态地图预览：有经纬度才展示 -->
+        <view v-if="game.courtLat && game.courtLng" class="map-wrap" @click="openCourtMap">
+          <map
+            class="mini-map"
+            :latitude="Number(game.courtLat)"
+            :longitude="Number(game.courtLng)"
+            :scale="15"
+            :markers="courtMarkers"
+            :show-location="false"
+          />
+          <view class="map-hint">点击查看大图</view>
+        </view>
+        <view v-if="game.remark" class="remark-block">
+          <view class="remark-title">球局备注</view>
+          <view class="remark-content">{{ game.remark }}</view>
         </view>
         <view class="line">
           <uni-icons type="person" size="14" color="#5A726D" />
-          <text>{{ game.registeredCount }} / {{ game.maxPlayers }} 人已报名</text>
+          <text>
+            {{ game.registeredCount }} / {{ game.maxPlayers }} 人已报名<template v-if="genderStat.total">
+              （男 {{ genderStat.male }} · 女 {{ genderStat.female }}）
+            </template>
+          </text>
         </view>
       </view>
 
-      <view class="actions">
-        <button v-if="!registered" class="btn primary" :loading="joining" @click="join">
-          {{ isLoggedIn ? '匿名报名' : '登录后报名' }}
+      <view v-if="showOverview" class="actions">
+        <button
+          v-if="!registered && isFull && game.status === 0"
+          class="btn disabled"
+          disabled
+        >
+          已满员
         </button>
-        <view v-else class="joined">已报名，等待开赛</view>
-        <button v-if="game.status === 0" class="btn ghost" :loading="arranging" @click="pickArrange">
-          自动编排
+        <button v-else-if="!registered" class="btn primary" :loading="joining" @click="join">
+          {{ isLoggedIn ? '报名' : '登录后报名' }}
         </button>
-        <button v-if="game.registrations.length >= 4" class="btn ghost" @click="goRotation">
-          轮排安排
+        <button v-else-if="game.status === 0" class="btn danger" :loading="canceling" @click="cancelJoin">
+          取消报名
+        </button>
+        <view v-else-if="game.status === 1" class="joined">已编排，等待开赛</view>
+        <view v-else-if="game.status === 2" class="joined finished">球局已结束</view>
+        <view v-else class="joined">已报名</view>
+        <button v-if="canArrange" class="btn ghost" :loading="arranging" @click="pickArrange">
+          选择编排方案
+        </button>
+        <view v-else-if="game.status === 0 && game.registrations.length < 4" class="joined">
+          还差 {{ 4 - game.registrations.length }} 人才能编排
+        </view>
+        <view v-else-if="game.status === 0 && isFull" class="joined">已满员，等待发起人编排</view>
+        <view v-else-if="game.status === 0" class="joined">等待发起人编排</view>
+        <button v-if="canManage && game.status === 0" class="btn ghost" @click="editGame">
+          编辑球局
+        </button>
+        <button v-if="canManage && game.status === 0" class="btn danger" @click="deleteThisGame">
+          删除球局
         </button>
       </view>
 
+      <!-- 发起人（跟下面报名名单 member 同款样式） -->
       <view class="panel">
-        <view class="panel-title">报名名单</view>
-        <view v-if="!game.registrations.length" class="panel-empty">还没有人报名</view>
-        <view v-for="(r, i) in game.registrations" :key="r.userId" class="member">
-          <view class="avatar" :style="{ background: colorOf(i) }">{{ (r.anonymousName || '?').charAt(0) }}</view>
-          <view class="member-info">
-            <text class="member-name">{{ r.anonymousName }}</text>
-            <text class="member-meta">{{ genderText(r.gender) }} · ELO {{ r.rating }}</text>
+        <view class="panel-title">发起人</view>
+        <view v-if="creatorInfo" class="member">
+          <image
+            v-if="creatorInfo.avatar"
+            class="member-avatar-img"
+            :src="resolveUrl(creatorInfo.avatar)"
+            mode="aspectFill"
+          />
+          <view v-else class="avatar" :style="{ background: colorOf(creatorInfo.userId) }">
+            {{ (creatorInfo.displayName || '?').charAt(0) }}
           </view>
+          <view class="member-info">
+            <text class="member-name">{{ creatorInfo.displayName || '球友' }}</text>
+            <text class="member-meta">{{ genderText(creatorInfo.gender) }} · ELO {{ creatorInfo.rating }}</text>
+          </view>
+        </view>
+        <view v-else class="panel-empty">球局已删除或发起人不存在</view>
+        <view v-if="canManage && creatorInfo" class="creator-actions">
+          <button class="hide-btn" @click="toggleHidden">
+            {{ game.hidden ? '恢复显示' : '隐藏球局' }}
+          </button>
         </view>
       </view>
 
-      <view v-if="matches" class="panel">
-        <view class="panel-title">
-          编排结果 · {{ matches.schemeName }}
-          <text v-if="matches.roundRobin" class="rr-badge">循环赛</text>
-        </view>
-        <view v-for="(m, i) in matches.matches" :key="i" class="match">
-          <view class="match-type">{{ MATCH_FORMAT[m.format] || '双打' }}</view>
-          <view class="match-row">
-            <text class="side">A：{{ m.teamA.map(nameOf).join(' / ') }}</text>
+      <view class="tab-content">
+        <!-- 报名名单 -->
+        <view v-if="activeTab === '报名名单'" class="panel">
+          <view class="panel-title">报名名单</view>
+          <view v-if="!game.registrations.length" class="panel-empty">还没有人报名</view>
+          <view v-for="(r, i) in game.registrations" :key="r.userId" class="member">
+            <image
+              v-if="realAvatarOf(r)"
+              class="member-avatar-img"
+              :src="resolveUrl(realAvatarOf(r))"
+              mode="aspectFill"
+            />
+            <view
+              v-else-if="r.displayAvatar && r.displayAvatar.emoji"
+              class="member-avatar-emoji"
+              :style="{ background: r.displayAvatar.bgColor || colorOf(r.userId) }"
+            >{{ r.displayAvatar.emoji }}</view>
+            <view v-else class="avatar" :style="{ background: colorOf(r.userId) }">
+              {{ (r.displayName || '?').charAt(0) }}
+            </view>
+            <view class="member-info">
+              <text class="member-name">{{ r.displayName || '球友' }}</text>
+              <text class="member-meta">{{ genderText(r.gender) }} · ELO {{ r.rating }}</text>
+            </view>
+
           </view>
-          <view class="match-row">
-            <text class="side">B：{{ m.teamB.map(nameOf).join(' / ') }}</text>
+        </view>
+
+        <!-- 轮排安排 -->
+        <view v-else-if="activeTab === '轮排安排'" class="panel">
+          <view class="panel-title">轮排安排</view>
+          <view v-if="game.status === 0 && game.registrations.length < 4" class="panel-empty">
+            还差 {{ 4 - game.registrations.length }} 人才能编排
+          </view>
+          <view v-else-if="game.status === 0 && !isCreator" class="panel-empty">
+            等待发起人编排
+          </view>
+          <view v-else-if="!isCreator" class="panel-empty">
+            轮排安排由发起人管理
+          </view>
+          <view v-else class="arrange-actions">
+            <button v-if="game.status === 0 && canManage" class="btn primary" :loading="arranging" @click="pickArrange">
+              选择编排方案
+            </button>
+            <button v-if="canManage && game.registrations.length >= 4" class="btn ghost" @click="goRotation">
+              进入轮排安排页面
+            </button>
           </view>
         </view>
+
+        <!-- 轮排结果 -->
+        <view v-else-if="activeTab === '轮排结果'" class="panel">
+          <view class="panel-title">
+            轮排结果 · {{ (matches && matches.schemeName) || '自动编排' }}
+            <text v-if="matches" class="rr-badge">{{ matches.finishedCount }} / {{ matches.totalCount }} 场已打完</text>
+          </view>
+          <view v-if="!matches || !matches.matches.length" class="panel-empty">还没有编排结果</view>
+          <template v-else>
+            <view v-for="rg in roundGroups" :key="rg.round" class="rr-round">
+              <view class="rr-round-head">
+                <text class="rr-round-no">第 {{ rg.round }} 轮</text>
+              </view>
+              <view class="rr-grid">
+                <view
+                  v-for="m in rg.matches"
+                  :key="`${rg.round}-${m.court}`"
+                  :class="['rr-match', { scored: m.winner }]"
+                  hover-class="rr-match-hv"
+                  hover-stay-time="120"
+                  @click="openScore(m)"
+                >
+                  <view class="rr-match-top">
+                    <text class="rr-match-type">{{ MATCH_FORMAT[m.format] || '双打' }} · {{ m.court }} 号场</text>
+                    <text v-if="m.winner" class="rr-match-score">
+                      <text :class="['score-num', { best: m.scoreA > m.scoreB }]">{{ m.scoreA }}</text>
+                      <text class="score-colon">:</text>
+                      <text :class="['score-num', { best: m.scoreB > m.scoreA }]">{{ m.scoreB }}</text>
+                    </text>
+                    <text v-else class="rr-match-score todo">录比分 ›</text>
+                  </view>
+                  <view class="rr-match-sides">
+                    <view class="rr-match-side">
+                      <view
+                        v-for="(p, pi) in sidePlayers(m.teamA, m.teamANames)"
+                        :key="`a-${p.userId}`"
+                        class="rr-player"
+                      >
+                        <image v-if="p.avatar" class="rr-avatar-img" :src="resolveUrl(p.avatar)" mode="aspectFill" />
+                        <view v-else-if="p.avatarView && p.avatarView.emoji" class="rr-avatar-emoji"
+                              :style="{ background: p.avatarView.bgColor || colorOf(p.userId) }">
+                          {{ p.avatarView.emoji }}
+                        </view>
+                        <view v-else class="rr-avatar" :style="{ background: colorOf(p.userId) }">
+                          {{ nameInitial(p.name) }}
+                        </view>
+                        <text class="rr-player-name">{{ p.name }}</text>
+                      </view>
+                    </view>
+                    <text class="rr-match-vs">VS</text>
+                    <view class="rr-match-side">
+                      <view
+                        v-for="(p, pi) in sidePlayers(m.teamB, m.teamBNames)"
+                        :key="`b-${p.userId}`"
+                        class="rr-player"
+                      >
+                        <image v-if="p.avatar" class="rr-avatar-img" :src="resolveUrl(p.avatar)" mode="aspectFill" />
+                        <view v-else-if="p.avatarView && p.avatarView.emoji" class="rr-avatar-emoji"
+                              :style="{ background: p.avatarView.bgColor || colorOf(p.userId) }">
+                          {{ p.avatarView.emoji }}
+                        </view>
+                        <view v-else class="rr-avatar" :style="{ background: colorOf(p.userId) }">
+                          {{ nameInitial(p.name) }}
+                        </view>
+                        <text class="rr-player-name">{{ p.name }}</text>
+                      </view>
+                    </view>
+                  </view>
+                </view>
+              </view>
+            </view>
+          </template>
+        </view>
+
+        <!-- 局内得分排名 -->
+        <view v-else-if="activeTab === '局内得分排名'" class="panel">
+          <view class="panel-title">
+            局内得分排名
+            <text v-if="matches" class="rr-badge">{{ matches.finishedCount }} / {{ matches.totalCount }} 场已打完</text>
+          </view>
+          <view v-if="!rankedStats.length" class="panel-empty">还没有比赛得分</view>
+          <view v-else class="rank-table">
+            <!-- 表头 -->
+            <view class="rank-thead">
+              <text class="col-rank">#</text>
+              <text class="col-name">名字</text>
+              <text class="col-gender">性别</text>
+              <text class="col-wl">胜负</text>
+              <text class="col-net">净胜分</text>
+              <text class="col-elo">ELO</text>
+            </view>
+            <!-- 数据行 -->
+            <view v-for="(s, i) in rankedStats" :key="s.userId" class="rank-row">
+              <text :class="['col-rank', 'rank-no', { gold: i === 0, silver: i === 1, bronze: i === 2 }]">{{ i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1 }}</text>
+              <view class="col-name">
+                <view class="rank-avatar">
+                  <image v-if="s.avatar" class="rank-avatar-img" :src="resolveUrl(s.avatar)" mode="aspectFill" />
+                  <view v-else class="rank-avatar-fallback" :style="{ background: colorOf(s.userId) }">
+                    {{ s.label ? s.label.charAt(0) : '球' }}
+                  </view>
+                </view>
+                <text class="stat-name">{{ truncateName(s.label) }}</text>
+              </view>
+              <text class="col-gender">{{ genderText(s.gender) }}</text>
+              <text class="col-wl">{{ s.winCount || 0 }}-{{ s.loseCount || 0 }}</text>
+              <text class="col-net">{{ s.points || 0 }}</text>
+              <text :class="['col-elo', 'elo-delta', { up: (s.eloDelta || 0) > 0, down: (s.eloDelta || 0) < 0 }]">
+                {{ eloDeltaText(s.eloDelta) }}
+              </text>
+            </view>
+          </view>
+        </view>
+      </view>
+    </view>
+
+    <!-- 底部 Tab 栏 -->
+    <view v-if="game" class="tab-bar">
+      <view
+        v-for="tab in tabs"
+        :key="tab"
+        :class="['tab-item', { active: activeTab === tab }]"
+        @click="onTabClick(tab)"
+      >
+        {{ tab }}
       </view>
     </view>
 
@@ -196,6 +746,27 @@ function colorOf(index) {
         </button>
       </view>
     </view>
+
+    <!-- 计分弹层：打完一场录一次，胜方按比分自动判定 -->
+    <view v-if="scoreVisible" class="mask" @click="closeScore">
+      <view class="picker" @click.stop>
+        <view class="picker-head">
+          <text class="picker-title">录入比分</text>
+          <text class="picker-close" @click="closeScore">✕</text>
+        </view>
+        <view class="score-row">
+          <text class="score-side">A 队</text>
+          <input class="score-input" type="number" v-model="scoreForm.scoreA" placeholder="0" />
+          <text class="score-colon">:</text>
+          <input class="score-input" type="number" v-model="scoreForm.scoreB" placeholder="0" />
+          <text class="score-side">B 队</text>
+        </view>
+        <view class="score-tip">胜方按比分自动判定，例如 21 : 15</view>
+        <button class="btn primary picker-go" type="button" :loading="scoring" @click="submitScore">
+          保存比分
+        </button>
+      </view>
+    </view>
   </view>
 </template>
 
@@ -203,7 +774,41 @@ function colorOf(index) {
 .page {
   min-height: 100vh;
   background: #faf7f0;
-  padding: 16px 16px 40px;
+  padding: 16px 16px calc(64px + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+.tab-content {
+  margin-top: 14px;
+}
+.tab-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  height: 56px;
+  padding-bottom: env(safe-area-inset-bottom);
+  border-top: 1px solid #e3e8e6;
+  background: #ffffff;
+  z-index: 50;
+}
+.tab-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: #5a726d;
+}
+.tab-item.active {
+  color: #14665b;
+  font-weight: 700;
+  background: #e0f1ec;
+}
+.arrange-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .state {
   margin-top: 80px;
@@ -255,6 +860,54 @@ function colorOf(index) {
   font-size: 13px;
   opacity: 0.92;
 }
+.location-alt {
+  color: #5a726d;
+  font-size: 12px;
+}
+.map-wrap {
+  margin-top: 8px;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+  height: 160px;
+}
+.mini-map {
+  width: 100%;
+  height: 100%;
+}
+.map-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+.remark-block {
+  margin: 8px 0 10px;
+  padding: 10px 12px;
+  background: #f0efea;
+  border-radius: 8px;
+  border-left: 3px solid #14665b;
+}
+.remark-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #14665b;
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+.remark-content {
+  font-size: 13px;
+  color: #1a2e2a;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .actions {
   display: flex;
   gap: 10px;
@@ -278,6 +931,16 @@ function colorOf(index) {
   background: #ffffff;
   color: #14665b;
 }
+.btn.danger {
+  border: 1px solid #c0392b;
+  background: #ffffff;
+  color: #c0392b;
+}
+.btn.disabled {
+  border: none;
+  background: #e3e8e6;
+  color: #9aa39c;
+}
 .joined {
   flex: 1;
   height: 42px;
@@ -286,8 +949,12 @@ function colorOf(index) {
   border-radius: 10px;
   background: #e0f1ec;
   color: #14665b;
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
+}
+.joined.finished {
+  background: #f0f2f1;
+  color: #6b7672;
 }
 .panel {
   margin-bottom: 14px;
@@ -305,6 +972,28 @@ function colorOf(index) {
   font-size: 14px;
   font-weight: 800;
   color: #1a2e2a;
+}
+.creator-actions {
+  margin-top: 8px;
+}
+.hide-btn {
+  width: 100%;
+  height: 36px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #b33a2e;
+  background: #fef5f4;
+  border: 1px solid #f3cfc8;
+  border-radius: 8px;
+  padding: 0;
+  margin: 0;
+  line-height: 36px;
+  text-align: center;
+  transition: background 0.15s, transform 0.1s;
+}
+.hide-btn:active {
+  background: #f3cfc8;
+  transform: scale(0.98);
 }
 .panel-empty {
   padding: 16px 0;
@@ -329,6 +1018,25 @@ function colorOf(index) {
   color: #ffffff;
   font-size: 14px;
   font-weight: 700;
+  flex-shrink: 0;
+}
+.member-avatar-img {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #e3e8e6;
+  flex-shrink: 0;
+}
+.member-avatar-emoji {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 17px;
+  flex-shrink: 0;
 }
 .member-info {
   display: flex;
@@ -343,6 +1051,104 @@ function colorOf(index) {
   font-size: 11px;
   color: #5a726d;
 }
+.real-badge {
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: #e0f1ec;
+  color: #14665b;
+  font-size: 10px;
+}
+/* ===== 轮排结果 round 分组竖排 ===== */
+.rr-round {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e3e8e6;
+  border-radius: 10px;
+  background: #ffffff;
+}
+.rr-round-head {
+  margin-bottom: 8px;
+}
+.rr-round-no {
+  font-size: 13px;
+  font-weight: 800;
+  color: #14665b;
+}
+.rr-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+.rr-match {
+  padding: 10px;
+  border-radius: 8px;
+  background: #faf7f0;
+}
+.rr-match.scored { border: 1px solid #14665b; }
+.rr-match-hv { background: #f2ece1; }
+.rr-match-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.rr-match-type { font-size: 12px; font-weight: 700; color: #14665b; }
+.rr-match-score { font-size: 15px; color: #5a726d; }
+.rr-match-score .score-num.best { color: #e03333 !important; font-weight: 800 !important; font-size: 19px !important; }
+.rr-match-score .score-colon { margin: 0 2px; color: #c9d2cf; }
+.rr-match-score.todo { color: #14665b; font-weight: 700; }
+.rr-match-sides {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 6px 0 2px;
+}
+.rr-match-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  justify-content: center;
+}
+.rr-match-vs {
+  font-size: 13px;
+  font-weight: 800;
+  color: #14665b;
+  flex-shrink: 0;
+}
+.rr-player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-width: 52px;
+}
+.rr-avatar,
+.rr-avatar-img,
+.rr-avatar-emoji {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.rr-avatar-img { border: 1.5px solid #e3e8e6; }
+.rr-player-name {
+  font-size: 11px;
+  color: #1a2e2a;
+  max-width: 56px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
 .match {
   padding: 10px;
   margin-bottom: 8px;
@@ -455,12 +1261,238 @@ function colorOf(index) {
   font-weight: 700;
   color: #14665b;
 }
-.match-row {
+.match-top {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
-.side {
-  font-size: 13px;
+.match-score {
+  font-size: 14px;
+  font-weight: 800;
   color: #1a2e2a;
+}
+.match-score.todo {
+  font-size: 12px;
+  font-weight: 700;
+  color: #14665b;
+}
+.match-sides {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+}
+.match-side {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.match-player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+.match-avatar-img {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #e3e8e6;
+}
+.match-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.match-avatar-emoji {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 17px;
+}
+.match-player-name {
+  max-width: 56px;
+  font-size: 11px;
+  color: #1a2e2a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.match-vs {
+  font-size: 13px;
+  font-weight: 800;
+  color: #14665b;
+  flex-shrink: 0;
+}
+.match-hv {
+  background: #f2ece1;
+}
+.mode-line {
+  gap: 8px;
+}
+.mode-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  color: #faf7f0;
+  font-size: 11px;
+  font-weight: 700;
+}
+.score-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 0 4px;
+}
+.score-side {
+  width: 40px;
+  text-align: center;
+  font-size: 13px;
+  color: #5a726d;
+}
+.score-input {
+  width: 76px;
+  height: 44px;
+  border: 1px solid #e3e8e6;
+  border-radius: 10px;
+  background: #fbfaf5;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 800;
+  color: #1a2e2a;
+}
+.score-colon {
+  font-size: 18px;
+  font-weight: 800;
+  color: #c9d2cf;
+}
+.score-tip {
+  padding-bottom: 12px;
+  text-align: center;
+  font-size: 11px;
+  color: #5a726d;
+}
+.rank-table {
+  width: 100%;
+  border-top: 1px solid #e3e8e6;
+}
+.rank-thead {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: #5a726d;
+  padding: 6px 4px;
+  border-bottom: 1px solid #e3e8e6;
+  font-weight: 600;
+  background: #f7faf8;
+}
+.rank-thead .col-rank { flex: 0 0 28px; text-align: center; }
+.rank-thead .col-name  { flex: 3; text-align: left; }
+.rank-thead .col-gender{ flex: 1; text-align: center; }
+.rank-thead .col-wl    { flex: 2; text-align: center; }
+.rank-thead .col-net   { flex: 1; text-align: center; }
+.rank-thead .col-elo   { flex: 1; text-align: center; }
+
+.rank-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 4px;
+  border-bottom: 1px solid #f0efea;
+  font-size: 12px;
+  color: #1a2e2a;
+  gap: 0;
+}
+.rank-row .col-rank { flex: 0 0 28px; text-align: center; }
+.rank-row .col-name {
+  flex: 3;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+.rank-row .col-gender { flex: 1; text-align: center; color: #5a726d; font-size: 12px; }
+.rank-row .col-wl     { flex: 2; text-align: center; font-size: 11px; }
+.rank-row .col-net    { flex: 1; text-align: center; font-weight: 700; }
+.rank-row .col-elo    { flex: 1; text-align: center; }
+
+.rank-no {
+  width: 22px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #5a726d;
+  text-align: center;
+}
+.rank-no.gold {
+  color: #d4a017;
+  font-size: 14px;
+  font-weight: 800;
+}
+.rank-no.silver {
+  color: #8a9baa;
+  font-size: 13px;
+  font-weight: 700;
+}
+.rank-no.bronze {
+  color: #a0652d;
+  font-size: 13px;
+  font-weight: 700;
+}
+.rank-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.rank-avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 1px solid #e3e8e6;
+  display: block;
+}
+.rank-avatar-fallback {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.stat-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1a2e2a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.elo-delta {
+  font-weight: 700;
+}
+.elo-delta.up {
+  color: #14665b;
+}
+.elo-delta.down {
+  color: #b33a2e;
 }
 </style>

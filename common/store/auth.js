@@ -34,10 +34,12 @@ function persist(next) {
         token: null,
         userId: next.userId,
         name: next.name,
+        avatar: next.avatar || '',
         gender: next.gender,
-        college: next.college,
+        account: next.account || '',
         rating: next.rating,
         gamesPlayed: next.gamesPlayed,
+        isAdmin: next.isAdmin === true,
       }),
     )
   } else {
@@ -75,9 +77,15 @@ async function register(payload) {
  * 取微信登录 code。
  * 没有 appid / 开发者工具不支持时降级成 mock code（后端 WX_MOCK_ENABLED=true 时可用），
  * 保证没有小程序账号也能联调。
+ * H5 手机网页不提供微信一键登录（UI 已隐藏），直接走 mock 兜底，避免调用不存在的 provider。
  */
 function getWxCode() {
   return new Promise((resolve) => {
+    // #ifdef H5
+    resolve(mockCode())
+    return
+    // #endif
+    // #ifndef H5
     uni.login({
       provider: 'weixin',
       success: (res) => {
@@ -89,6 +97,7 @@ function getWxCode() {
       },
       fail: () => resolve(mockCode()),
     })
+    // #endif
   })
 }
 
@@ -157,10 +166,38 @@ async function restore() {
   }
 }
 
+/**
+ * 强制拉取一次最新用户信息（不受 restored 幂等限制）。
+ * 用于「我的」页 onShow、头像上传后等场景，保证多端缓存的头像/资料是库里最新值。
+ */
+async function refreshMe() {
+  if (!getToken()) {
+    return
+  }
+  try {
+    const me = await authApi.fetchMe()
+    persist({ ...me, token: null })
+  } catch (e) {
+    /* 静默失败：下次 restore / 其他请求会再同步 */
+  }
+}
+
+/**
+ * token 过期 / 被登出时由请求层广播：这里同步清掉登录态。
+ * 放在 store 里而不是 App.vue，是为了让「谁先 import 谁负责」——页面必然 import 本模块。
+ */
+if (typeof uni !== 'undefined' && typeof uni.$on === 'function') {
+  uni.$on('shuyu:unauthorized', () => {
+    restored.value = false
+    persist(null)
+  })
+}
+
 export function useAuth() {
   return {
     user,
     isLoggedIn: computed(() => user.value !== null),
+    isAdmin: computed(() => user.value?.isAdmin === true),
     submitting,
     restored,
     login,
@@ -169,5 +206,6 @@ export function useAuth() {
     applyProfile,
     logout,
     restore,
+    refreshMe,
   }
 }

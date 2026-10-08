@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { simulateElo } from '../../common/api/elo'
 import { toastError } from '../../common/util'
+import NavBack from '../../components/nav-back/nav-back.vue'
 
 const maleCount = ref(4)
 const femaleCount = ref(2)
@@ -10,6 +11,21 @@ const roundRobin = ref(false)
 const ratingsText = ref('1200,1300,1400,1250,1180,1320')
 const result = ref(null)
 const computing = ref(false)
+
+/**
+ * 编排方案：不传 = 按男女人数自动过滤（与线上编排一致）；
+ * format 走「赛制」语义（单打 / 男双 / 女双 / 混双），schemeId 走 8 套编排方案
+ */
+const schemes = [
+  { label: '自动（按人数）', value: 0 },
+  { label: '全单打', value: 1, format: 1 },
+  { label: '全混双', value: 2, format: 4 },
+  { label: '全男双', value: 3, format: 2 },
+  { label: '全女双', value: 4, format: 3 },
+  { label: '混搭·混双优先', value: 5, schemeId: 5 },
+  { label: '混搭·同性别优先', value: 6, schemeId: 6 },
+]
+const schemeIndex = ref(0)
 
 const ratings = computed(() =>
   ratingsText.value
@@ -32,13 +48,17 @@ async function run() {
   }
   computing.value = true
   try {
-    result.value = await simulateElo({
+    const picked = schemes[schemeIndex.value] || schemes[0]
+    const payload = {
       maleCount: Number(maleCount.value),
       femaleCount: Number(femaleCount.value),
       ratings: ratings.value,
       gamesPlayed: Number(gamesPlayed.value),
       roundRobin: roundRobin.value,
-    })
+    }
+    if (picked.format) payload.format = picked.format
+    else if (picked.schemeId) payload.schemeId = picked.schemeId
+    result.value = await simulateElo(payload)
   } catch (e) {
     toastError(e, '试算失败')
   } finally {
@@ -61,11 +81,13 @@ function allSides(match) {
 
 <template>
   <view class="page">
+    <NavBack />
+
     <scroll-view class="body" scroll-y>
       <view class="intro">
         <view class="intro-title">ELO 试算实验室</view>
         <view class="intro-desc">
-          调用后端真实编排引擎与 ELO 计算器，按「先男后女」顺序传入初始积分，预演一场球局结束后的积分变化（不落库）。
+          调用后端真实编排与 ELO 计算器，按「先男后女」顺序传入初始积分，预演一场球局结束后的积分变化（不落库）。
         </view>
       </view>
 
@@ -85,6 +107,22 @@ function allSides(match) {
         <view class="row">
           <text class="row-label">循环赛</text>
           <switch :checked="roundRobin" color="#14665B" @change="roundRobin = $event.detail.value" />
+        </view>
+        <view class="col">
+          <text class="row-label">编排方案</text>
+          <view class="chips">
+            <view
+              v-for="s in schemes"
+              :key="s.value"
+              :class="['chip', { active: schemeIndex === s.value }]"
+              @click="schemeIndex = s.value"
+            >
+              {{ s.label }}
+            </view>
+          </view>
+          <text class="hint">
+            混双要求男女人数相等；男双 / 女双各需至少 4 人
+          </text>
         </view>
         <view class="col">
           <text class="row-label">初始积分（逗号分隔，先男后女）</text>
@@ -136,7 +174,7 @@ function allSides(match) {
 .intro {
   padding: 16px;
   border-radius: 12px;
-  background: #14665b;
+  background: #0c3125;
   color: #faf7f0;
 }
 .intro-title {
@@ -167,7 +205,7 @@ function allSides(match) {
 .row-label {
   font-size: 13px;
   font-weight: 600;
-  color: #1a2e2a;
+  color: #0c3125;
 }
 .col {
   padding: 12px 0 0;
@@ -177,6 +215,26 @@ function allSides(match) {
   margin-top: 6px;
   font-size: 11px;
   color: #5a726d;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chip {
+  padding: 4px 10px;
+  border: 1px solid #e3e8e6;
+  border-radius: 999px;
+  background: #faf7f0;
+  color: #5a726d;
+  font-size: 11px;
+}
+.chip.active {
+  background: #0c3125;
+  border-color: #0c3125;
+  color: #faf7f0;
+  font-weight: 700;
 }
 .run {
   margin-top: 14px;
@@ -212,7 +270,7 @@ function allSides(match) {
   min-width: 60px;
   text-align: right;
   font-weight: 800;
-  color: #14665b;
+  color: #0c3125;
 }
 .match {
   padding: 10px;
@@ -229,7 +287,7 @@ function allSides(match) {
 .format {
   font-size: 12px;
   font-weight: 700;
-  color: #14665b;
+  color: #0c3125;
 }
 .exp {
   font-size: 11px;
@@ -243,7 +301,7 @@ function allSides(match) {
   margin-top: 4px;
   font-size: 12px;
   font-weight: 700;
-  color: #2e8b57;
+  color: #0c3125;
 }
 .delta {
   font-size: 11px;

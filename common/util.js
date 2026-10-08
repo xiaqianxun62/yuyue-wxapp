@@ -1,3 +1,14 @@
+import { getBaseUrl } from './config'
+
+/** 后端相对路径补全为完整 URL（小程序端补全为 http://IP/api/uploads/xxx；H5 下由 devServer 代理，保持 /uploads/xxx） */
+export function resolveUrl(url) {
+  if (!url) return ''
+  if (/^https?:\/\//.test(url)) return url
+  const base = getBaseUrl()
+  if (url.startsWith('/')) return base + url
+  return base + '/' + url
+}
+
 /** 常用地点：与官网保持一致 */
 export const LOCATIONS = [
   '体育馆羽毛球场',
@@ -13,25 +24,6 @@ export const TIME_SLOTS = [
   { start: '20:00:00', end: '22:00:00' },
   { start: '14:00:00', end: '16:00:00' },
   { start: '09:00:00', end: '11:00:00' },
-]
-
-/** 学院列表 */
-export const DEPARTMENTS = [
-  '计算机学院',
-  '体育学院',
-  '电子工程学院',
-  '机械工程学院',
-  '生命学院',
-  '经管学院',
-  '数学学院',
-  '物理学院',
-  '外国语学院',
-  '建筑学院',
-  '新闻学院',
-  '材料学院',
-  '法学院',
-  '化学学院',
-  '人文学院',
 ]
 
 /** 性别：1男 2女 0未知 */

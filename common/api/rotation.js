@@ -16,3 +16,12 @@ export function planRotation(payload) {
 export function planRotationForGame(gameId, payload) {
   return request(`/rotation/game/${gameId}`, { method: 'POST', body: payload })
 }
+
+/**
+ * 读取该球局已保存的轮排表（重新进入页面时还原，含已录比分）
+ * 还没生成过时后端 data 为 null
+ * @param {number} gameId
+ */
+export function getRotationForGame(gameId) {
+  return request(`/rotation/game/${gameId}`, { method: 'GET' })
+}

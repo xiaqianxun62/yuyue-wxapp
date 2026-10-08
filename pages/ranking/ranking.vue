@@ -2,10 +2,13 @@
 import { ref } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { fetchRanking } from '../../common/api/ranking'
-import { AVATAR_COLORS, toastError } from '../../common/util'
+import { AVATAR_COLORS, toastError, resolveUrl } from '../../common/util'
 
 const list = ref([])
 const loading = ref(false)
+
+const statusBarHeight = uni.getSystemInfoSync().statusBarHeight || 20
+const navbarHeight = statusBarHeight + 44
 
 async function load() {
   loading.value = true
@@ -47,6 +50,10 @@ function winRate(item) {
 
 <template>
   <view class="page">
+    <view class="navbar" :style="{ paddingTop: statusBarHeight + 'px' }">
+      <view class="nav-title">ELO 积分榜</view>
+    </view>
+
     <view class="hero">
       <view class="hero-title">ELO 积分榜</view>
       <view class="hero-desc">每场对局自动结算，榜单实时更新</view>
@@ -62,10 +69,13 @@ function winRate(item) {
         :class="['row', { top: item.rank <= 3 }]"
       >
         <view :class="['rank', `r${Math.min(item.rank, 4)}`]">{{ medalText(item.rank) }}</view>
-        <view class="avatar" :style="{ background: colorOf(i) }">{{ item.anonymousName.charAt(0) }}</view>
+        <view v-if="item.avatar" class="avatar avatar-img-wrap">
+          <image class="avatar-img" :src="resolveUrl(item.avatar)" mode="aspectFill" />
+        </view>
+        <view v-else class="avatar" :style="{ background: colorOf(item.userId) }">{{ item.name.charAt(0) }}</view>
         <view class="info">
-          <text class="name">{{ item.anonymousName }}</text>
-          <text class="meta">{{ item.college || '未填写学院' }} · {{ winRate(item) }}</text>
+          <text class="name">{{ item.name }}</text>
+          <text class="meta">{{ winRate(item) }}</text>
         </view>
         <view class="score">
           <text class="rating">{{ item.rating }}</text>
@@ -82,9 +92,21 @@ function winRate(item) {
   background: #faf7f0;
   padding-bottom: 30px;
 }
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0c3125;
+  color: #faf7f0;
+}
+.nav-title {
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 44px;
+}
 .hero {
   padding: 20px 16px;
-  background: #14665b;
+  background: #0c3125;
   color: #faf7f0;
 }
 .hero-title {
@@ -153,6 +175,15 @@ function winRate(item) {
   color: #ffffff;
   font-size: 15px;
   font-weight: 700;
+  overflow: hidden;
+}
+.avatar-img-wrap {
+  background: transparent;
+}
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
 }
 .info {
   flex: 1;
