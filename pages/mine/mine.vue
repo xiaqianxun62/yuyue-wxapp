@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { genderText, resolveUrl } from '../../common/util'
+import SmartImage from '../../components/SmartImage/SmartImage.vue'
 import { useAuth } from '../../common/store/auth'
 import { navigateTo } from '../../common/nav'
 import { ENVIRONMENTS, getEnvId, setEnvId, getCustomUrl, setCustomUrl, getCurrentEnv } from '../../common/config'
@@ -68,7 +69,7 @@ function saveCustomUrl() {
 
     <view v-if="isLoggedIn && user" class="profile">
       <view v-if="user.avatar" class="avatar">
-        <image class="avatar-img" :src="resolveUrl(user.avatar)" mode="aspectFill" />
+        <SmartImage class="avatar-img" :src="user.avatar" mode="aspectFill" />
       </view>
       <view v-else class="avatar">{{ user.name.charAt(0) }}</view>
       <view class="name">{{ user.name }}</view>

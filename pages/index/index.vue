@@ -4,6 +4,7 @@ import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { GAME_STATUS, cancelRegisterGame, listGames, registerGame } from '../../common/api/game'
 import { getHomePoem } from '../../common/api/settings'
 import { AVATAR_COLORS, resolveUrl, shortDate, shortTime, toastError } from '../../common/util'
+import SmartImage from '../../components/SmartImage/SmartImage.vue'
 import { useAuth } from '../../common/store/auth'
 import { navigateTo, switchTab } from '../../common/nav'
 
@@ -508,7 +509,7 @@ async function onJoin(game) {
                 class="av"
                 :style="{ background: a.bgColor || colorOf(a.userId) }"
               >
-                <image v-if="a.imageUrl" class="av-img" :src="resolveUrl(a.imageUrl)" mode="aspectFill" />
+                <SmartImage v-if="a.imageUrl" class="av-img" :src="a.imageUrl" mode="aspectFill" />
                 <text v-else-if="a.emoji">{{ a.emoji }}</text>
                 <text v-else>{{ a.char }}</text>
               </view>

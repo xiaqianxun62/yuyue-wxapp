@@ -9,6 +9,24 @@ export function resolveUrl(url) {
   return base + '/' + url
 }
 
+/**
+ * 根据后端命名约定推导缩略图路径。
+ * 后端 uploadAvatar / uploadCover 会把 xxx.ext 存一份 xxx_thumb.jpg，
+ * 前端 SmartImage 组件用这个函数算出缩略图 URL，避免后端多返回字段。
+ *
+ *   /uploads/avatar_2_1789979220803_3.jpeg → /uploads/avatar_2_1789979220803_3_thumb.jpg
+ *   /uploads/cover_xxx.png                → /uploads/cover_xxx_thumb.jpg
+ *
+ * 跨域/第三方 URL（http 开头的头像 CDN 等）原样返回，不做缩略图处理。
+ */
+export function thumbUrl(originalUrl) {
+  if (!originalUrl) return ''
+  if (/^https?:\/\//.test(originalUrl)) return originalUrl
+  const lastDot = originalUrl.lastIndexOf('.')
+  if (lastDot < 0) return originalUrl + '_thumb.jpg'
+  return originalUrl.slice(0, lastDot) + '_thumb.jpg'
+}
+
 /** 常用地点：与官网保持一致 */
 export const LOCATIONS = [
   '体育馆羽毛球场',

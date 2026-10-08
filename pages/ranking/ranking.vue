@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { fetchRanking } from '../../common/api/ranking'
 import { AVATAR_COLORS, toastError, resolveUrl } from '../../common/util'
+import SmartImage from '../../components/SmartImage/SmartImage.vue'
 
 const list = ref([])
 const loading = ref(false)
@@ -70,7 +71,7 @@ function winRate(item) {
       >
         <view :class="['rank', `r${Math.min(item.rank, 4)}`]">{{ medalText(item.rank) }}</view>
         <view v-if="item.avatar" class="avatar avatar-img-wrap">
-          <image class="avatar-img" :src="resolveUrl(item.avatar)" mode="aspectFill" />
+          <SmartImage class="avatar-img" :src="item.avatar" mode="aspectFill" />
         </view>
         <view v-else class="avatar" :style="{ background: colorOf(item.userId) }">{{ item.name.charAt(0) }}</view>
         <view class="info">

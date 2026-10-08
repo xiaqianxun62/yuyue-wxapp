@@ -4,6 +4,7 @@ import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { ARRANGE_SCHEMES, GAME_STATUS, MATCH_FORMAT, arrangeGame, cancelRegisterGame, deleteGame, getGame, getGameMatches, hideGame, registerGame, scoreMatch, unhideGame } from '../../common/api/game'
 import { getRotationForGame } from '../../common/api/rotation'
 import { AVATAR_COLORS, genderText, resolveUrl, shortDate, shortTime, toastError } from '../../common/util'
+import SmartImage from '../../components/SmartImage/SmartImage.vue'
 import { useAuth } from '../../common/store/auth'
 import { navigateTo } from '../../common/nav'
 import NavBack from '../../components/nav-back/nav-back.vue'
@@ -519,10 +520,10 @@ function sidePlayers(team, names) {
       <view class="panel">
         <view class="panel-title">发起人</view>
         <view v-if="creatorInfo" class="member">
-          <image
+          <SmartImage
             v-if="creatorInfo.avatar"
             class="member-avatar-img"
-            :src="resolveUrl(creatorInfo.avatar)"
+            :src="creatorInfo.avatar"
             mode="aspectFill"
           />
           <view v-else class="avatar" :style="{ background: colorOf(creatorInfo.userId) }">
@@ -547,10 +548,10 @@ function sidePlayers(team, names) {
           <view class="panel-title">报名名单</view>
           <view v-if="!game.registrations.length" class="panel-empty">还没有人报名</view>
           <view v-for="(r, i) in game.registrations" :key="r.userId" class="member">
-            <image
+            <SmartImage
               v-if="realAvatarOf(r)"
               class="member-avatar-img"
-              :src="resolveUrl(realAvatarOf(r))"
+              :src="realAvatarOf(r)"
               mode="aspectFill"
             />
             <view
@@ -628,7 +629,7 @@ function sidePlayers(team, names) {
                         :key="`a-${p.userId}`"
                         class="rr-player"
                       >
-                        <image v-if="p.avatar" class="rr-avatar-img" :src="resolveUrl(p.avatar)" mode="aspectFill" />
+                        <SmartImage v-if="p.avatar" class="rr-avatar-img" :src="p.avatar" mode="aspectFill" />
                         <view v-else-if="p.avatarView && p.avatarView.emoji" class="rr-avatar-emoji"
                               :style="{ background: p.avatarView.bgColor || colorOf(p.userId) }">
                           {{ p.avatarView.emoji }}
@@ -646,7 +647,7 @@ function sidePlayers(team, names) {
                         :key="`b-${p.userId}`"
                         class="rr-player"
                       >
-                        <image v-if="p.avatar" class="rr-avatar-img" :src="resolveUrl(p.avatar)" mode="aspectFill" />
+                        <SmartImage v-if="p.avatar" class="rr-avatar-img" :src="p.avatar" mode="aspectFill" />
                         <view v-else-if="p.avatarView && p.avatarView.emoji" class="rr-avatar-emoji"
                               :style="{ background: p.avatarView.bgColor || colorOf(p.userId) }">
                           {{ p.avatarView.emoji }}
@@ -686,7 +687,7 @@ function sidePlayers(team, names) {
               <text :class="['col-rank', 'rank-no', { gold: i === 0, silver: i === 1, bronze: i === 2 }]">{{ i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : i + 1 }}</text>
               <view class="col-name">
                 <view class="rank-avatar">
-                  <image v-if="s.avatar" class="rank-avatar-img" :src="resolveUrl(s.avatar)" mode="aspectFill" />
+                  <SmartImage v-if="s.avatar" class="rank-avatar-img" :src="s.avatar" mode="aspectFill" />
                   <view v-else class="rank-avatar-fallback" :style="{ background: colorOf(s.userId) }">
                     {{ s.label ? s.label.charAt(0) : '球' }}
                   </view>

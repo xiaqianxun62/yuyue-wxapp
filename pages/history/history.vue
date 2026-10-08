@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { toastError, resolveUrl } from '../../common/util'
+import SmartImage from '../../components/SmartImage/SmartImage.vue'
 import { useAuth } from '../../common/store/auth'
 import { navigateTo } from '../../common/nav'
 import { listMyGames } from '../../common/api/game'
@@ -148,7 +149,7 @@ function formatFormatLabel(f) {
           <view class="avatar-group">
             <view v-for="(t, i) in m.teammates" :key="'t'+i" class="ma-box">
               <view class="ma-box-inner">
-                <image v-if="t.avatar" class="ma-img" :src="resolveUrl(t.avatar)" mode="aspectFill" />
+                <SmartImage v-if="t.avatar" class="ma-img" :src="t.avatar" mode="aspectFill" />
                 <view v-else class="ma-fallback ma-teammate">{{ t.name.charAt(0) }}</view>
                 <view v-if="i === 0" class="ma-me-badge">我</view>
               </view>
@@ -159,7 +160,7 @@ function formatFormatLabel(f) {
           <view class="avatar-group">
             <view v-for="(o, i) in m.opponents" :key="'o'+i" class="ma-box">
               <view class="ma-box-inner">
-                <image v-if="o.avatar" class="ma-img" :src="resolveUrl(o.avatar)" mode="aspectFill" />
+                <SmartImage v-if="o.avatar" class="ma-img" :src="o.avatar" mode="aspectFill" />
                 <view v-else class="ma-fallback ma-opponent">{{ o.name.charAt(0) }}</view>
               </view>
               <text class="ma-name">{{ o.name }}</text>
