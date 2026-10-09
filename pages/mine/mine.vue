@@ -40,6 +40,7 @@ function goElo() { navigateTo('/pages/elo/elo') }
 function goRotation() { navigateTo('/pages/rotation/rotation') }
 function goHistory() { navigateTo('/pages/history/history') }
 function goFootwork() { navigateTo('/pages/footwork/footwork') }
+function goVerify() { navigateTo('/pages/verify/verify') }
 
 function openEnvPicker() {
   customUrlInput.value = getCustomUrl()
@@ -113,6 +114,13 @@ function saveCustomUrl() {
       <view class="item" @click="goFootwork">
         <uni-icons type="paperplane" size="16" color="#14665B" />
         <text class="item-text">步伐训练</text>
+        <text class="arrow">›</text>
+      </view>
+      <view class="item" @click="goVerify">
+        <uni-icons type="locked" size="16" color="#14665B" />
+        <text class="item-text">SHUKE认证</text>
+        <text v-if="user?.isVerified" class="tag verified">已认证</text>
+        <text v-else class="tag unverified">未认证</text>
         <text class="arrow">›</text>
       </view>
 
@@ -282,6 +290,23 @@ function saveCustomUrl() {
 .arrow {
   font-size: 16px;
   color: #5a726d;
+  margin-left: auto;
+}
+.tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  margin-left: auto;
+  margin-right: 8px;
+}
+.tag.verified {
+  background: #e8f4e0;
+  color: #27ae60;
+}
+.tag.unverified {
+  background: #fdecea;
+  color: #b33a2e;
 }
 .foot {
   margin-top: 20px;

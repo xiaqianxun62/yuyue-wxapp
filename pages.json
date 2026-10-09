@@ -52,6 +52,12 @@
       }
     },
     {
+      "path": "pages/verify/verify",
+      "style": {
+        "navigationBarTitleText": "SHUKE认证"
+      }
+    },
+    {
       "path": "pages/detail/detail",
       "style": {
         "navigationBarTitleText": "球局详情",
@@ -119,7 +125,7 @@
   },
   "globalStyle": {
     "navigationBarTextStyle": "white",
-    "navigationBarTitleText": "数羽 SHUYU",
+    "navigationBarTitleText": "SHUYU",
     "navigationBarBackgroundColor": "#0F3B2E",
     "backgroundColor": "#F5F0E5",
     "backgroundTextStyle": "dark",

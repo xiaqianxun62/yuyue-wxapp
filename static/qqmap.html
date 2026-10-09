@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>球场地图</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #fff; overflow: hidden;
+    font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; }
+  /* id 叫 qq-map 避免和 JS 全局变量 window.map 冲突 */
+  #qq-map { width: 100%; height: 100%; background: #eef1ef; position: relative; }
+</style>
+<script>
+(function () {
+  var q = {}
+  location.search.replace(/^\?/, '').split('&').forEach(function (kv) {
+    if (!kv) return
+    var p = kv.split('=')
+    q[decodeURIComponent(p[0])] = decodeURIComponent((p[1] || '').replace(/\+/g, ' '))
+  })
+  window.__MAP_Q = q
+})()
+</script>
+<script src="https://map.qq.com/api/js?v=2.exp&key=DROBZ-77XCZ-2WQXQ-7HMJ5-CKIR7-N4BRC&callback=initMap" async></script>
+</head>
+<body>
+<div id="qq-map"></div>
+<script>
+var q = window.__MAP_Q || {}
+var lat = parseFloat(q.lat), lng = parseFloat(q.lng)
+var title = q.title || '球场位置'
+// 中国境内经纬防反（双保险）
+if (Math.abs(lat) > 60 && Math.abs(lng) < 60) { var t = lat; lat = lng; lng = t }
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+  })
+}
+
+window.onerror = function () { /* 静默 */ }
+
+// 对外暴露 Map 实例 + center，方便父页 Console 调试
+window.__qqMap = null
+window.__qqCenter = null
+
+function initMap() {
+  try {
+    var mapsNS = window.qq && window.qq.maps
+    if (!mapsNS || isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) {
+      document.getElementById('qq-map').innerHTML =
+        '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#5a726d;font-size:13px">' +
+        esc('暂无精确坐标') + '</div>'
+      return
+    }
+    var center = new mapsNS.LatLng(lat, lng)
+    window.__qqCenter = center
+    var mapEl = document.getElementById('qq-map')
+    var map = new mapsNS.Map(mapEl, { center: center, zoom: 16 })
+    window.__qqMap = map
+
+    var marker = new mapsNS.Marker({ position: center, map: map })
+    // disableAutoPan: true 禁止 InfoWindow 打开时自动平移视口，
+    // 否则气泡会把 marker 顶到视口下半部，看起来不居中
+    var infoWin = new mapsNS.InfoWindow({ map: map, disableAutoPan: true })
+    infoWin.setPosition(center)
+    infoWin.setContent('<div style="padding:6px 10px;font-size:13px;font-weight:700;color:#1a2e2a">' + esc(title) + '</div>')
+    infoWin.open()
+    mapsNS.event.addListener(marker, 'click', function () { infoWin.open() })
+
+    // 多次回设中心，覆盖瓦片加载 / 内部布局变化导致的视口偏移
+    // 关键：InfoWindow 不自动打开 → marker 不会被气泡顶偏，就是纯居中
+    function recenter() {
+      try {
+        if (map.checkResize) map.checkResize()
+        map.setCenter(center)
+      } catch (e) {}
+    }
+    setTimeout(recenter, 200)
+    setTimeout(recenter, 600)
+    setTimeout(recenter, 1200)
+  } catch (e) {
+    document.getElementById('qq-map').innerHTML =
+      '<div style="height:100%;display:flex;align-items:center;justify-content:center;color:#c00;font-size:13px">地图加载异常</div>'
+  }
+}
+</script>
+</body>
+</html>

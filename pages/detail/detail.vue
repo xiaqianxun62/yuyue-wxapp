@@ -4,7 +4,9 @@ import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import { ARRANGE_SCHEMES, GAME_STATUS, MATCH_FORMAT, arrangeGame, cancelRegisterGame, deleteGame, getGame, getGameMatches, hideGame, registerGame, scoreMatch, unhideGame } from '../../common/api/game'
 import { getRotationForGame } from '../../common/api/rotation'
 import { AVATAR_COLORS, genderText, resolveUrl, shortDate, shortTime, toastError } from '../../common/util'
+import { wgs84ToGcj02 } from '../../common/coord'
 import SmartImage from '../../components/SmartImage/SmartImage.vue'
+import QqMapView from '../../components/QqMapView/QqMapView.vue'
 import { useAuth } from '../../common/store/auth'
 import { navigateTo } from '../../common/nav'
 import NavBack from '../../components/nav-back/nav-back.vue'
@@ -31,6 +33,10 @@ const scoreForm = ref({ matchId: 0, scoreA: '', scoreB: '' })
 const rotationStats = ref([])
 
 const statusInfo = computed(() => GAME_STATUS[game.value ? game.value.status : 0])
+
+/** 默认封面图（game.cover 为空时使用） */
+const DEFAULT_COVER = '/uploads/cover_1791509309948_6080.jpg'
+const coverUrl = computed(() => game.value?.cover || DEFAULT_COVER)
 /** 轮排结果 / 得分排名页签下隐藏球局头卡与报名操作，把屏幕让给对阵表 */
 const showOverview = computed(
   () => activeTab.value === '报名名单' || activeTab.value === '轮排安排',
@@ -75,30 +81,18 @@ const genderStat = computed(() => {
   return { total: list.length, male, female }
 })
 
-/** 地图标记 */
-const courtMarkers = computed(() => {
-  const g = game.value
-  if (!g?.courtLat || !g?.courtLng) return []
-  return [{
-    id: 1,
-    latitude: Number(g.courtLat),
-    longitude: Number(g.courtLng),
-    title: g.courtName || g.location || '球场位置',
-    width: 28,
-    height: 36,
-  }]
-})
-
 /** 点击地图 → 打开原生地图查看（微信小程序/H5 都支持） */
 function openCourtMap() {
   const g = game.value
   if (!g?.courtLat || !g?.courtLng) return
+  // uni.openLocation 在微信里也是 GCJ-02
+  const [mgLng, mgLat] = wgs84ToGcj02(Number(g.courtLng), Number(g.courtLat))
   uni.openLocation({
-    latitude: Number(g.courtLat),
-    longitude: Number(g.courtLng),
+    latitude: mgLat,
+    longitude: mgLng,
     name: g.courtName || g.location || '球场位置',
     address: g.location || '',
-    scale: 16,
+    scale: 17,
   })
 }
 
@@ -438,7 +432,17 @@ function sidePlayers(team, names) {
     <view v-if="!game" class="state">{{ loading ? '加载中…' : '球局不存在' }}</view>
 
     <view v-else class="content">
-      <view v-if="showOverview" class="head">
+      <!-- 封面 Banner -->
+      <view class="cover-banner" v-if="showOverview">
+        <SmartImage :src="coverUrl" mode="aspectFill" class="cover-img" />
+        <view class="cover-overlay" />
+        <view class="cover-info">
+          <text class="cover-title">{{ game.title }}</text>
+          <text :class="['badge', statusInfo.type]">{{ statusInfo.text }}</text>
+        </view>
+      </view>
+
+      <view v-if="showOverview" class="head head-below-cover">
         <view class="head-top">
           <text class="title">{{ game.title }}</text>
           <text :class="['badge', statusInfo.type]">{{ statusInfo.text }}</text>
@@ -457,17 +461,32 @@ function sidePlayers(team, names) {
           <text>{{ game.location || game.courtName || '地点待定' }}</text>
           <text v-if="game.courtName && game.location !== game.courtName && game.location" class="location-alt">（{{ game.courtName }}）</text>
         </view>
-        <!-- 静态地图预览：有经纬度才展示 -->
-        <view v-if="game.courtLat && game.courtLng" class="map-wrap" @click="openCourtMap">
-          <map
-            class="mini-map"
-            :latitude="Number(game.courtLat)"
-            :longitude="Number(game.courtLng)"
-            :scale="15"
-            :markers="courtMarkers"
-            :show-location="false"
-          />
-          <view class="map-hint">点击查看大图</view>
+        <!-- 地图预览：有经纬度才展示 -->
+        <view v-if="game.courtLat && game.courtLng" class="map-section">
+          <view class="map-header">
+            <text class="map-title">📍 {{ game.courtName || game.location || '球场位置' }}</text>
+            <text class="map-sub" v-if="game.courtName && game.location !== game.courtName">{{ game.location }}</text>
+          </view>
+          <view class="map-wrap">
+            <QqMapView
+              :latitude="game.courtLat"
+              :longitude="game.courtLng"
+              :title="game.courtName || game.location || '球场位置'"
+              :height="520"
+              :radius="11"
+              @tap="openCourtMap"
+            />
+          </view>
+          <view class="map-actions">
+            <button class="map-btn" @click.stop="openCourtMap">
+              <uni-icons type="map-filled" size="14" color="#14665B" />
+              导航到此
+            </button>
+            <button class="map-btn" @click.stop="openCourtMap">
+              <uni-icons type="location" size="14" color="#14665B" />
+              查看地图
+            </button>
+          </view>
         </view>
         <view v-if="game.remark" class="remark-block">
           <view class="remark-title">球局备注</view>
@@ -497,17 +516,17 @@ function sidePlayers(team, names) {
         <button v-else-if="game.status === 0" class="btn danger" :loading="canceling" @click="cancelJoin">
           取消报名
         </button>
-        <view v-else-if="game.status === 1" class="joined">已编排，等待开赛</view>
+        <view v-else-if="game.status === 1" class="joined">等待开赛</view>
         <view v-else-if="game.status === 2" class="joined finished">球局已结束</view>
         <view v-else class="joined">已报名</view>
         <button v-if="canArrange" class="btn ghost" :loading="arranging" @click="pickArrange">
           选择编排方案
         </button>
         <view v-else-if="game.status === 0 && game.registrations.length < 4" class="joined">
-          还差 {{ 4 - game.registrations.length }} 人才能编排
+          至少 {{ 4 - game.registrations.length }} 人
         </view>
-        <view v-else-if="game.status === 0 && isFull" class="joined">已满员，等待发起人编排</view>
-        <view v-else-if="game.status === 0" class="joined">等待发起人编排</view>
+        <view v-else-if="game.status === 0 && isFull" class="joined">已满员，等待发起人</view>
+        <view v-else-if="game.status === 0" class="joined">等待发起人</view>
         <button v-if="canManage && game.status === 0" class="btn ghost" @click="editGame">
           编辑球局
         </button>
@@ -817,6 +836,46 @@ function sidePlayers(team, names) {
   font-size: 13px;
   color: #5a726d;
 }
+/* ===== 封面 Banner ===== */
+.cover-banner {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  height: 160px;
+  margin-bottom: 8px;
+}
+.cover-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.cover-overlay {
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(26,46,42,0) 40%, rgba(26,46,42,0.88) 100%);
+}
+.cover-info {
+  position: absolute;
+  left: 16px; right: 16px; bottom: 12px;
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 10px;
+}
+.cover-title {
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  text-shadow: 0 1px 4px rgba(0,0,0,.5);
+  line-height: 1.3;
+  flex: 1;
+  min-width: 0;
+}
+.cover-info .badge {
+  flex-shrink: 0;
+}
+
+.head-below-cover {
+  margin-top: 0;
+}
+
 .head {
   padding: 16px;
   border-radius: 12px;
@@ -865,29 +924,60 @@ function sidePlayers(team, names) {
   color: #5a726d;
   font-size: 12px;
 }
-.map-wrap {
+/* ===== 地图区块：独立白底圆角卡片 ===== */
+.map-section {
   margin-top: 8px;
-  border-radius: 10px;
+  border: 1px solid #e3e8e6;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(20, 102, 91, 0.08);
   overflow: hidden;
+}
+.map-header {
+  padding: 8px 14px 8px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.map-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a2e2a;
+}
+.map-sub {
+  font-size: 12px;
+  color: #5a726d;
+}
+.map-wrap {
   position: relative;
-  height: 160px;
+  background: #eee;
+  max-height: 320px;
 }
-.mini-map {
-  width: 100%;
-  height: 100%;
+.map-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #fff;
+  border-top: 1px solid #f0efea;
 }
-.map-hint {
-  position: absolute;
-  right: 8px;
-  bottom: 6px;
-  padding: 3px 8px;
-  border-radius: 10px;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  font-size: 11px;
-  line-height: 1.4;
-  pointer-events: none;
+.map-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #f1f5f3;
+  color: #14665b;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  line-height: 1;
 }
+.map-btn:active { background: #e0f1ec; }
+.map-btn::after { display: none; }
 .remark-block {
   margin: 8px 0 10px;
   padding: 10px 12px;
