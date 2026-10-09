@@ -17,7 +17,7 @@ const { user, isLoggedIn, restore } = useAuth()
 
 const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
 const TABS = [
-  { text: '全部', status: null },
+  { text: '默认', status: null },
   { text: '报名中', status: 0 },
   { text: '已编排', status: 1 },
   { text: '已结束', status: 2 },
@@ -58,7 +58,7 @@ function sortDateKey(g) {
 
 const filtered = computed(() => {
   const status = TABS[tabIndex.value].status
-  let list = status === null ? games.value : games.value.filter((g) => g.status === status)
+  let list = status === null ? games.value.filter((g) => g.status !== 2) : games.value.filter((g) => g.status === status)
   const kw = keyword.value.trim()
   if (kw) {
     list = list.filter(
@@ -85,9 +85,8 @@ const rest = computed(() =>
 )
 
 function countOf(status) {
-  return status === null
-    ? games.value.length
-    : games.value.filter((g) => g.status === status).length
+  if (status === null) return games.value.filter((g) => g.status !== 2).length
+  return games.value.filter((g) => g.status === status).length
 }
 
 async function load() {
@@ -471,8 +470,8 @@ async function onJoin(game) {
       </view>
 
       <!-- 精选大卡 -->
-      <view v-if="featured" :class="['gcard', 'card-' + featured.id]">
-        <view class="pic" hover-class="pic-hv" hover-stay-time="120" @click="toggleExpand(featured.id)">
+      <view v-if="featured" :class="['gcard', 'card-' + featured.id]" @click="goDetail(featured.id)">
+        <view class="pic" hover-class="pic-hv" hover-stay-time="120">
           <image
             v-if="featured.cover"
             class="pic-cover"
@@ -576,6 +575,7 @@ async function onJoin(game) {
         v-for="game in rest"
         :key="game.id"
         :class="['ccard', 'card-' + game.id]"
+        @click="goDetail(game.id)"
       >
         <view class="date">
           <template v-if="game.mode === 1">
@@ -593,7 +593,7 @@ async function onJoin(game) {
             <text class="w">{{ weekdayText(game.playDate) }}</text>
           </template>
         </view>
-        <view class="mid" hover-class="mid-hv" hover-stay-time="120" @click.stop="toggleExpand(game.id)">
+        <view class="mid" hover-class="mid-hv" hover-stay-time="120">
           <view class="ttl2">
             <text class="t">{{ game.title }}</text>
             <text :class="['badge', statusClass(game.status)]">{{ statusText(game.status) }}</text>

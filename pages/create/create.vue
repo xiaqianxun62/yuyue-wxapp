@@ -7,7 +7,7 @@ import { LOCATIONS, TIME_SLOTS, toastError, resolveUrl } from '../../common/util
 import { useAuth } from '../../common/store/auth'
 import { navigateTo, switchTab } from '../../common/nav'
 
-const { isLoggedIn } = useAuth()
+const { user, isLoggedIn } = useAuth()
 
 const DEFAULT_MAX = 8
 
@@ -33,6 +33,7 @@ const form = ref({
   courtCount: 2,
   cover: '',
   remark: '',
+  isVerified: false,
 })
 const coverPreview = ref('')
 const uploadingCover = ref(false)
@@ -246,6 +247,8 @@ async function submit() {
     }
     if (form.value.location) payload.location = form.value.location
     if (form.value.remark && form.value.remark.trim()) payload.remark = form.value.remark.trim()
+    // 仅认证用户才能发起"仅认证可见"球局（其他人即使传了也被后端忽略）
+    if (user.value?.isVerified && form.value.isVerified) payload.isVerified = true
     if (isEdit.value) {
       await updateGame(editingId.value, payload)
       uni.showToast({ title: '球局已修改', icon: 'success' })
@@ -379,6 +382,15 @@ async function submit() {
           :cursor-spacing="20"
         />
         <view class="hint">{{ (form.remark || '').length }}/500</view>
+      </view>
+
+      <!-- 仅认证用户可见开关：只有 isVerified=true 的用户才能设置 -->
+      <view v-if="user?.isVerified" class="section">
+        <view class="label">
+          仅队内可见
+          <switch :checked="form.isVerified" color="#14665b" @change="form.isVerified = $event.detail.value" style="transform:scale(0.8);margin-left:auto" />
+        </view>
+        <view class="hint">开启后，只有通过 SHUKE 认证的球友才能看到这个球局</view>
       </view>
 
       <button class="submit" type="button" :loading="submitting" @click="submit">

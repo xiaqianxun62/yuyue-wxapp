@@ -8,8 +8,8 @@
 
     <!-- 已通过状态 -->
     <view v-if="userVerified" class="card verified">
-      <view class="status-icon">✅</view>
-      <text class="status-title">SHUKE认证通过</text>
+      <!--<view class="status-icon"></view>-->
+      <text class="status-title">认证通过</text>
       <button class="btn primary" @click="handleBack">返回个人中心</button>
     </view>
 
